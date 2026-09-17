@@ -1,0 +1,10 @@
+# CMake build directories and generated files
+/systemc_hello/build*/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/CTestTestfile.cmake
+**/install_manifest.txt
+**/compile_commands.json
+**/Testing/
+**/_deps/
