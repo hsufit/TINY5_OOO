@@ -1,11 +1,9 @@
 #include "rv32im_cpu.h"
 
-#include <algorithm>
+#include "cpu_protocol.h"
+
 #include <cstring>
-#include <iomanip>
 #include <limits>
-#include <sstream>
-#include <stdexcept>
 
 namespace {
 
@@ -41,51 +39,28 @@ Rv32imCpu::Rv32imCpu(sc_core::sc_module_name name) : sc_core::sc_module(name) {
     dont_initialize();
 }
 
-void Rv32imCpu::load_program(const std::uint8_t* bytes, std::size_t size) {
-    if (size > memory_.size()) {
-        throw std::invalid_argument("program does not fit in instruction memory");
-    }
-    if (size != 0U && bytes == nullptr) {
-        throw std::invalid_argument("non-empty program has a null byte pointer");
-    }
-
-    memory_.fill(0);
-    if (size != 0U) {
-        std::copy_n(bytes, size, memory_.begin());
-    }
-    program_size_ = size;
-}
-
-std::uint32_t Rv32imCpu::reg(std::size_t index) const {
-    if (index >= registers_.size()) {
-        throw std::out_of_range("RISC-V register index is out of range");
-    }
-    return registers_[index];
-}
-
 void Rv32imCpu::reset_state() {
     registers_.fill(0);
     pc_ = 0;
-    retired_instructions_ = 0;
-    halted_state_ = false;
-    fault_state_ = false;
-    fault_message_.clear();
+    state_ = State::IssueRequest;
+    imem_req_valid.write(false);
+    imem_req_addr.write(0U);
+    imem_rsp_ready.write(false);
+    retire_valid.write(false);
+    retire_pc.write(0U);
+    retire_rd.write(0U);
+    retire_value.write(0U);
     halted.write(false);
     fault.write(false);
+    fault_code.write(static_cast<unsigned>(CpuFaultCode::NONE));
 }
 
-std::uint32_t Rv32imCpu::fetch_word(std::uint32_t address) const {
-    const std::size_t base = address;
-    return static_cast<std::uint32_t>(memory_[base]) |
-           (static_cast<std::uint32_t>(memory_[base + 1U]) << 8U) |
-           (static_cast<std::uint32_t>(memory_[base + 2U]) << 16U) |
-           (static_cast<std::uint32_t>(memory_[base + 3U]) << 24U);
-}
-
-void Rv32imCpu::raise_fault(const std::string& message) {
-    fault_state_ = true;
-    fault_message_ = message;
+void Rv32imCpu::raise_fault(unsigned code) {
     fault.write(true);
+    fault_code.write(code);
+    imem_req_valid.write(false);
+    imem_rsp_ready.write(false);
+    state_ = State::Stopped;
 }
 
 void Rv32imCpu::tick() {
@@ -93,41 +68,57 @@ void Rv32imCpu::tick() {
         reset_state();
         return;
     }
-    if (halted_state_ || fault_state_) {
-        return;
-    }
-    if (pc_ == program_size_) {
-        halted_state_ = true;
-        halted.write(true);
-        return;
-    }
-    if ((pc_ & 0x3U) != 0U || pc_ > program_size_ ||
-        program_size_ - pc_ < sizeof(std::uint32_t)) {
-        std::ostringstream message;
-        message << "truncated or misaligned instruction at PC 0x" << std::hex << pc_;
-        raise_fault(message.str());
-        return;
-    }
+    retire_valid.write(false);
 
-    const std::uint32_t instruction = fetch_word(pc_);
-    if (!execute(instruction)) {
-        std::ostringstream message;
-        message << "unsupported instruction 0x" << std::hex << std::setw(8)
-                << std::setfill('0') << instruction << " at PC 0x" << pc_;
-        raise_fault(message.str());
-        return;
-    }
+    switch (state_) {
+    case State::IssueRequest:
+        imem_req_addr.write(pc_);
+        imem_req_valid.write(true);
+        state_ = State::WaitForRequest;
+        break;
 
-    registers_[0] = 0;
-    pc_ += 4U;
-    ++retired_instructions_;
-    if (pc_ == program_size_) {
-        halted_state_ = true;
-        halted.write(true);
+    case State::WaitForRequest:
+        if (imem_req_valid.read() && imem_req_ready.read()) {
+            imem_req_valid.write(false);
+            imem_rsp_ready.write(true);
+            state_ = State::WaitForResponse;
+        }
+        break;
+
+    case State::WaitForResponse:
+        if (imem_rsp_valid.read() && imem_rsp_ready.read()) {
+            imem_rsp_ready.write(false);
+            const auto status = static_cast<InstructionResponseStatus>(
+                imem_rsp_status.read().to_uint());
+            if (status == InstructionResponseStatus::END_OF_PROGRAM) {
+                halted.write(true);
+                state_ = State::Stopped;
+            } else if (status != InstructionResponseStatus::OK) {
+                raise_fault(static_cast<unsigned>(CpuFaultCode::INSTRUCTION_ACCESS_FAULT));
+            } else {
+                unsigned rd = 0U;
+                std::uint32_t value = 0U;
+                if (!execute(imem_rsp_data.read().to_uint(), rd, value)) {
+                    raise_fault(static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION));
+                } else {
+                    retire_pc.write(pc_);
+                    retire_rd.write(rd);
+                    retire_value.write(value);
+                    retire_valid.write(true);
+                    pc_ += 4U;
+                    state_ = State::IssueRequest;
+                }
+            }
+        }
+        break;
+
+    case State::Stopped:
+        break;
     }
 }
 
-bool Rv32imCpu::execute(std::uint32_t instruction) {
+bool Rv32imCpu::execute(std::uint32_t instruction, unsigned& retired_rd,
+                        std::uint32_t& retired_value) {
     const std::uint32_t opcode = instruction & 0x7fU;
     const unsigned rd = (instruction >> 7U) & 0x1fU;
     const unsigned funct3 = (instruction >> 12U) & 0x7U;
@@ -183,6 +174,9 @@ bool Rv32imCpu::execute(std::uint32_t instruction) {
         }
 
         registers_[rd] = result;
+        registers_[0] = 0U;
+        retired_rd = rd;
+        retired_value = registers_[rd];
         return true;
     }
 
@@ -248,6 +242,9 @@ bool Rv32imCpu::execute(std::uint32_t instruction) {
         }
 
         registers_[rd] = result;
+        registers_[0] = 0U;
+        retired_rd = rd;
+        retired_value = registers_[rd];
         return true;
     }
 
@@ -311,5 +308,8 @@ bool Rv32imCpu::execute(std::uint32_t instruction) {
     }
 
     registers_[rd] = result;
+    registers_[0] = 0U;
+    retired_rd = rd;
+    retired_value = registers_[rd];
     return true;
 }

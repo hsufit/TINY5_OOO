@@ -6,48 +6,46 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <string>
 
 class Rv32imCpu : public sc_core::sc_module {
 public:
-    static constexpr std::size_t kMemorySize = 4096;
     static constexpr std::size_t kRegisterCount = 32;
 
     sc_core::sc_in<bool> clk{"clk"};
     sc_core::sc_in<bool> reset{"reset"};
+
+    sc_core::sc_out<bool> imem_req_valid{"imem_req_valid"};
+    sc_core::sc_in<bool> imem_req_ready{"imem_req_ready"};
+    sc_core::sc_out<sc_dt::sc_uint<32>> imem_req_addr{"imem_req_addr"};
+
+    sc_core::sc_in<bool> imem_rsp_valid{"imem_rsp_valid"};
+    sc_core::sc_out<bool> imem_rsp_ready{"imem_rsp_ready"};
+    sc_core::sc_in<sc_dt::sc_uint<32>> imem_rsp_data{"imem_rsp_data"};
+    sc_core::sc_in<sc_dt::sc_uint<2>> imem_rsp_status{"imem_rsp_status"};
+
+    sc_core::sc_out<bool> retire_valid{"retire_valid"};
+    sc_core::sc_out<sc_dt::sc_uint<32>> retire_pc{"retire_pc"};
+    sc_core::sc_out<sc_dt::sc_uint<5>> retire_rd{"retire_rd"};
+    sc_core::sc_out<sc_dt::sc_uint<32>> retire_value{"retire_value"};
+
     sc_core::sc_out<bool> halted{"halted"};
     sc_core::sc_out<bool> fault{"fault"};
+    sc_core::sc_out<sc_dt::sc_uint<2>> fault_code{"fault_code"};
 
     SC_HAS_PROCESS(Rv32imCpu);
     explicit Rv32imCpu(sc_core::sc_module_name name);
 
-    void load_program(const std::uint8_t* bytes, std::size_t size);
-
-    template <std::size_t N>
-    void load_program(const std::array<std::uint8_t, N>& bytes) {
-        load_program(bytes.data(), bytes.size());
-    }
-
-    std::uint32_t reg(std::size_t index) const;
-    std::uint32_t pc() const { return pc_; }
-    std::uint64_t retired_instructions() const { return retired_instructions_; }
-    const std::string& fault_message() const { return fault_message_; }
-
 private:
+    enum class State { IssueRequest, WaitForRequest, WaitForResponse, Stopped };
+
     void tick();
     void reset_state();
-    bool execute(std::uint32_t instruction);
-    void raise_fault(const std::string& message);
-    std::uint32_t fetch_word(std::uint32_t address) const;
+    bool execute(std::uint32_t instruction, unsigned& rd, std::uint32_t& value);
+    void raise_fault(unsigned code);
 
-    std::array<std::uint8_t, kMemorySize> memory_{};
     std::array<std::uint32_t, kRegisterCount> registers_{};
-    std::size_t program_size_{0};
     std::uint32_t pc_{0};
-    std::uint64_t retired_instructions_{0};
-    bool halted_state_{false};
-    bool fault_state_{false};
-    std::string fault_message_;
+    State state_{State::IssueRequest};
 };
 
 #endif
