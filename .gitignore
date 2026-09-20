@@ -1,5 +1,7 @@
 # CMake build directories and generated files
 /systemc_hello/build*/
+/riscv_emulator/build*/
+/rtl/build*/
 **/CMakeFiles/
 **/CMakeCache.txt
 **/cmake_install.cmake
