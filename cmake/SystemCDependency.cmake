@@ -1,4 +1,7 @@
 # Source installations provide a CMake package; distro packages may only have .pc metadata.
+if(TARGET SystemC::systemc)
+    return()
+endif()
 find_package(SystemCLanguage 2.3.3 CONFIG QUIET)
 if(SystemCLanguage_FOUND)
     message(STATUS "Found SystemC ${SystemCLanguage_VERSION} via SystemCLanguage")
