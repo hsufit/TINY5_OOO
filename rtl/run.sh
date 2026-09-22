@@ -22,6 +22,8 @@ cmake -S "$project_dir" -B "$build_dir" \
     -DCMAKE_BUILD_TYPE=Debug \
     -DBUILD_TESTING=ON \
     -DTINY5_BUILD_RTL=ON
-cmake --build "$build_dir" --target rtl_single_inorder_tests --parallel 2
+cmake --build "$build_dir" \
+    --target rtl_single_inorder_tests rtl_add_mul_waveform --parallel 2
 ctest --test-dir "$build_dir" --verbose \
-    -R '^rtl_single_inorder$' --output-on-failure
+    -R '^(rtl_single_inorder|rtl_add_mul_waveform)$' --output-on-failure
+printf 'Waveform: %s\n' "$build_dir/rtl/add_mul.fst"
