@@ -38,8 +38,23 @@ ProgramTest fault(std::string name, std::vector<std::uint8_t> program,
 
 }  // namespace
 
+const ProgramTest& rv32im_add_mul_test() {
+    static const ProgramTest test = success(
+        "ADD/MUL sequence",
+        {
+            0x93, 0x00, 0x60, 0x00,  // addi x1,x0,6
+            0x13, 0x01, 0x70, 0x00,  // addi x2,x0,7
+            0xb3, 0x81, 0x20, 0x00,  // add  x3,x1,x2
+            0x33, 0x82, 0x20, 0x02,  // mul  x4,x1,x2
+            0xb3, 0x82, 0x41, 0x00,  // add  x5,x3,x4
+        },
+        {{1, 6U}, {2, 7U}, {3, 13U}, {4, 42U}, {5, 55U}});
+    return test;
+}
+
 const std::vector<ProgramTest>& rv32im_test_catalog() {
     static const std::vector<ProgramTest> tests{
+        rv32im_add_mul_test(),
         success(
             "RV32I register arithmetic",
             {

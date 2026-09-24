@@ -1,13 +1,13 @@
-#ifndef RV32IM_CPU_H
-#define RV32IM_CPU_H
+#ifndef RV32IM_REFERENCE_CPU_H
+#define RV32IM_REFERENCE_CPU_H
 
 #include <systemc>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 
-class Rv32imCpu : public sc_core::sc_module {
+class Rv32imReferenceCpu : public sc_core::sc_module {
 public:
     static constexpr std::size_t kRegisterCount = 32;
 
@@ -32,16 +32,21 @@ public:
     sc_core::sc_out<bool> fault{"fault"};
     sc_core::sc_out<sc_dt::sc_uint<2>> fault_code{"fault_code"};
 
-    SC_HAS_PROCESS(Rv32imCpu);
-    explicit Rv32imCpu(sc_core::sc_module_name name);
-    ~Rv32imCpu() override;
+    SC_HAS_PROCESS(Rv32imReferenceCpu);
+    explicit Rv32imReferenceCpu(sc_core::sc_module_name name);
 
 private:
-    struct Pipeline;
+    enum class State { IssueRequest, WaitForRequest, WaitForResponse, Stopped };
+
     void tick();
-    void drive_outputs();
-    std::unique_ptr<Pipeline> pipeline_;
-    sc_core::sc_event state_changed_;
+    void reset_state();
+    bool execute(std::uint32_t instruction, unsigned& rd, std::uint32_t& value);
+    void raise_fault(unsigned code);
+
+    std::array<std::uint32_t, kRegisterCount> registers_{};
+    std::uint32_t pc_{0};
+    State state_{State::IssueRequest};
 };
 
 #endif
+

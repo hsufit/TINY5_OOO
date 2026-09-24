@@ -26,5 +26,6 @@ struct ProgramTest {
 };
 
 const std::vector<ProgramTest>& rv32im_test_catalog();
+const ProgramTest& rv32im_add_mul_test();
 
 #endif

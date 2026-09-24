@@ -13,7 +13,7 @@ set(MODEL Vcore_single_inorder)
 add_executable(${TARGET} sim/core_tests.cpp)
 target_include_directories(${TARGET} PRIVATE sim)
 target_link_libraries(${TARGET} PRIVATE
-    rv32im_cpu instruction_memory rv32im_test_support SystemC::systemc)
+    rv32im_cpu rv32im_reference_cpu instruction_memory rv32im_test_support SystemC::systemc)
 target_compile_definitions(${TARGET} PRIVATE
     RTL_MODEL_HEADER="${MODEL}.h" RTL_MODEL_CLASS=${MODEL} RTL_MODE=0)
 verilate(${TARGET} SYSTEMC PREFIX ${MODEL} TOP_MODULE core_test_wrapper
@@ -26,7 +26,7 @@ set(WAVEFORM_TARGET rtl_add_mul_waveform)
 set(WAVEFORM_MODEL Vcore_single_inorder_waveform)
 add_executable(${WAVEFORM_TARGET} sim/add_mul_waveform_test.cpp)
 target_include_directories(${WAVEFORM_TARGET} PRIVATE sim)
-target_link_libraries(${WAVEFORM_TARGET} PRIVATE instruction_memory SystemC::systemc)
+target_link_libraries(${WAVEFORM_TARGET} PRIVATE instruction_memory rv32im_test_support SystemC::systemc)
 target_compile_definitions(${WAVEFORM_TARGET} PRIVATE
     RTL_MODEL_HEADER="${WAVEFORM_MODEL}.h" RTL_MODEL_CLASS=${WAVEFORM_MODEL})
 verilate(${WAVEFORM_TARGET} SYSTEMC TRACE_FST TRACE_STRUCTS

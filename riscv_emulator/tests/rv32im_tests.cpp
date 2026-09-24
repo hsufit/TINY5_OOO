@@ -1,5 +1,6 @@
 #include "cpu_protocol.h"
 #include "instruction_memory.h"
+#include "program_cycle_counter.h"
 #include "retirement_scoreboard.h"
 #include "rv32im_cpu.h"
 #include "test_catalog.h"
@@ -79,6 +80,7 @@ public:
 
 private:
     void start_program(const ProgramTest& test, InstructionMemory::Timing timing) {
+        cycles_.reset();
         reset.write(true);
         memory.set_timing(timing);
         memory.load_program(test.program);
@@ -87,9 +89,10 @@ private:
         reset.write(false);
     }
 
-    bool wait_for_completion(unsigned maximum_cycles = 1000U) {
+    bool wait_for_completion(unsigned maximum_cycles) {
         for (unsigned cycle = 0; cycle < maximum_cycles; ++cycle) {
             wait(clock.negedge_event());
+            cycles_.sample(halted.read() || fault.read());
             if (halted.read() || fault.read()) {
                 return true;
             }
@@ -105,7 +108,7 @@ private:
     void check_test(const ProgramTest& test, const std::string& mode) {
         const std::string name = test.name + " [" + mode + "]";
         const unsigned failures_before = failures_;
-        if (!wait_for_completion()) {
+        if (!wait_for_completion(2000U + 128U * static_cast<unsigned>(test.program.size() / 4U))) {
             fail(name, "timed out");
             return;
         }
@@ -143,16 +146,20 @@ private:
         const bool saved_halt = halted.read();
         const bool saved_fault = fault.read();
         const unsigned saved_code = fault_code.read().to_uint();
+        const auto saved_count = scoreboard.retirement_count();
         wait(clock.posedge_event());
         wait(clock.posedge_event());
         wait(clock.negedge_event());
         if (halted.read() != saved_halt || fault.read() != saved_fault ||
-            fault_code.read().to_uint() != saved_code) {
-            fail(name, "termination outputs were not sticky");
+            fault_code.read().to_uint() != saved_code ||
+            scoreboard.retirement_count() != saved_count || retire_valid.read() ||
+            imem_req_valid.read() || imem_rsp_ready.read()) {
+            fail(name, "termination outputs were not sticky and quiescent");
         }
 
         if (failures_ == failures_before) {
-            std::cout << "[PASS] " << name << '\n';
+            std::cout << "[PASS] " << name << " cycles=" << cycles_.cycles()
+                      << " retired=" << scoreboard.retirement_count() << '\n';
         }
     }
 
@@ -173,6 +180,7 @@ private:
     }
 
     unsigned failures_{0};
+    ProgramCycleCounter cycles_;
 };
 
 }  // namespace

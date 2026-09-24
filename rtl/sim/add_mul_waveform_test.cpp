@@ -1,7 +1,9 @@
 #include RTL_MODEL_HEADER
 #include "dual_retirement_scoreboard.h"
 #include "instruction_memory.h"
+#include "program_cycle_counter.h"
 #include "rtl_adapter.h"
+#include "test_catalog.h"
 
 #include <systemc>
 #include <verilated.h>
@@ -110,15 +112,7 @@ private:
     }
 
     void run() {
-        // addi x1,x0,6; addi x2,x0,7; add x3,x1,x2;
-        // mul x4,x1,x2; add x5,x3,x4
-        const std::vector<std::uint8_t> program{
-            0x93, 0x00, 0x60, 0x00,
-            0x13, 0x01, 0x70, 0x00,
-            0xb3, 0x81, 0x20, 0x00,
-            0x33, 0x82, 0x20, 0x02,
-            0xb3, 0x82, 0x41, 0x00,
-        };
+        const auto& program = rv32im_add_mul_test().program;
         const std::vector<RetirementEvent> expected{
             {0, 1, 6}, {4, 2, 7}, {8, 3, 13}, {12, 4, 42}, {16, 5, 55},
         };
@@ -129,11 +123,13 @@ private:
         wait(clock.negedge_event());
         reset.write(false);
 
-        unsigned cycle = 0;
-        for (; cycle < 500 && !halted.read() && !fault.read(); ++cycle)
+        ProgramCycleCounter cycles;
+        while (cycles.cycles() < 500 && !cycles.stopped()) {
             wait(clock.negedge_event());
+            cycles.sample(halted.read() || fault.read());
+        }
 
-        if (cycle == 500) fail("timed out");
+        if (!cycles.stopped()) fail("timed out");
         if (fault.read()) fail("unexpected processor fault " + std::to_string(fault_code.read().to_uint()));
         if (!halted.read()) fail("processor did not halt");
         if (lane1_retired_) fail("retirement lane 1 was used by a single-issue core");
@@ -141,7 +137,8 @@ private:
         if (scoreboard.state.events() != expected) fail("retirement trace or result values differ");
 
         if (failures_ == 0)
-            std::cout << "[PASS] ADD/MUL waveform test: x3=13, x4=42, x5=55\n";
+            std::cout << "[PASS] ADD/MUL waveform test: x3=13, x4=42, x5=55"
+                      << " cycles=" << cycles.cycles() << " retired=5\n";
         sc_core::sc_stop();
     }
 

@@ -1,19 +1,30 @@
 # SystemC RV32IM Arithmetic Emulator
 
-This directory contains a clocked reference CPU for the arithmetic subset of
-RV32I and RV32M. It is intentionally not a full RISC-V machine: there are no
+This directory contains a cycle-accurate SystemC CPU for the arithmetic subset
+of RV32I and RV32M, matching `tiny5_single_inorder`. There are no
 branches, jumps, loads, stores, CSRs, traps, or system calls.
+
+`Rv32imCpu` models the RTL frontend queues, operand dependencies, issue and
+completion queues, registered ALU, multiply/divide timing, two writeback lanes,
+and single-instruction retirement. Multiply/divide results are computed from
+captured operands and exposed after the RTL's 32 iteration edges and result
+publication edge. Independent ALU instructions can execute during those steps.
+All stage transfers use pre-edge state; newly freed queue capacity is visible
+on the following cycle.
+
+The original interpreter is preserved as `Rv32imReferenceCpu` in a separate
+test-reference library. It remains independent of the pipeline model.
 
 ## Reusable interfaces
 
-The CPU no longer owns instruction memory. `InstructionMemory` is a separate
+The CPU does not own instruction memory. `InstructionMemory` is a separate
 4 KiB SystemC module with a one-outstanding-request ready/valid interface. Its
 program-loading API accepts byte arrays or vectors, assembles 32-bit words in
 little-endian order, and distinguishes successful fetches, the exact end of a
 complete program, and access faults. Reset clears protocol state but preserves
 the loaded image.
 
-The normal timing profile keeps the request channel ready and returns a
+The normal timing profile has no request delay while idle and returns a
 response one cycle after acceptance. The stalled profile waits two request
 cycles and returns the response after three cycles. A valid response remains
 stable until accepted.
@@ -38,10 +49,36 @@ register zero and value zero.
 
 The test programs and typed expectations live in `test_catalog.cpp`. The
 `RetirementScoreboard` reconstructs all architectural registers solely from
-retirement ports. Consequently, the testbench does not inspect CPU internals
-and can be reused when a Verilated SystemVerilog CPU implements these ports.
-The `instruction_memory` and `rv32im_test_support` CMake libraries can likewise
-be linked into that future runner.
+retirement ports. The RTL differential runner gives each of the RTL CPU,
+SystemC pipeline, and interpreter its own identically configured memory.
+It compares RTL/SystemC fetch handshakes, valid payloads, retirement, and
+termination every cycle, and checks architectural traces against the interpreter.
+
+## ADD/MUL sequence and cycle counts
+
+The SystemC catalog and `rtl_add_mul_waveform` share the same program bytes
+through `rv32im_add_mul_test()`:
+
+```asm
+addi x1, x0, 6
+addi x2, x0, 7
+add  x3, x1, x2
+mul  x4, x1, x2
+add  x5, x3, x4
+```
+
+The test requires five retirements at PCs 0, 4, 8, 12, and 16, with
+`x1=6, x2=7, x3=13, x4=42, x5=55`, then a normal halt. It runs with both
+memory timing profiles. SystemC tests do not generate waveforms.
+
+Cycle 1 is the first rising edge after reset release. Counts include the edge
+that asserts halt or fault, and exclude reset and subsequent sticky-output
+checks. With the current RTL, the shared sequence prints:
+
+```text
+[PASS] ADD/MUL sequence [normal] cycles=66 retired=5
+[PASS] ADD/MUL sequence [stalled] cycles=82 retired=5
+```
 
 ## Supported instructions
 
@@ -60,7 +97,24 @@ On a host with CMake, a C++17 compiler, and SystemC installed:
 ```
 
 This builds with `-Wall -Wextra -Wpedantic -Werror` and runs both the CPU
-catalog test and the standalone memory-protocol test through CTest.
+catalog test (including ADD/MUL) and the standalone memory-protocol test through
+CTest, then prints the catalog results and cycle counts. Verilator is not
+required for this standalone build.
+
+For cycle comparison against RTL, with Verilator installed:
+
+```sh
+./rtl/run.sh
+```
+
+This also runs the existing RTL waveform test. To run all regressions from a
+fresh build directory:
+
+```sh
+cmake -S . -B /tmp/tiny5-build -DBUILD_TESTING=ON -DTINY5_BUILD_RTL=ON
+cmake --build /tmp/tiny5-build --parallel 2
+ctest --test-dir /tmp/tiny5-build --output-on-failure
+```
 
 Using this repository's development container:
 

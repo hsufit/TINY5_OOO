@@ -2,7 +2,9 @@
 #include "rtl_adapter.h"
 #include "dual_retirement_scoreboard.h"
 #include "instruction_memory.h"
+#include "program_cycle_counter.h"
 #include "rv32im_cpu.h"
+#include "rv32im_reference_cpu.h"
 #include "test_catalog.h"
 #include <systemc>
 #include <algorithm>
@@ -75,12 +77,14 @@ class Testbench : public sc_core::sc_module {
 public:
     sc_core::sc_clock clock{"clock", 10, sc_core::SC_NS};
     sc_signal<bool> reset{"reset"}, reserved_status{"reserved_status"};
-    FetchSignals rtl_fetch{"rtl_fetch"}, reference_fetch{"reference_fetch"};
-    RetireSignals rtl_retire{"rtl_retire"}, reference_retire{"reference_retire"};
+    FetchSignals rtl_fetch{"rtl_fetch"}, reference_fetch{"reference_fetch"}, systemc_fetch{"systemc_fetch"};
+    RetireSignals rtl_retire{"rtl_retire"}, reference_retire{"reference_retire"}, systemc_retire{"systemc_retire"};
     RtlCpuAdapter<RTL_MODEL_CLASS> cpu{"cpu"};
-    Rv32imCpu reference{"reference"};
-    InstructionMemory memory{"memory"}, reference_memory{"reference_memory"};
-    DualRetirementScoreboard scoreboard{"scoreboard"}, reference_scoreboard{"reference_scoreboard"};
+    Rv32imCpu systemc_cpu{"systemc_cpu"};
+    Rv32imReferenceCpu reference{"reference"};
+    InstructionMemory memory{"memory"}, reference_memory{"reference_memory"}, systemc_memory{"systemc_memory"};
+    DualRetirementScoreboard scoreboard{"scoreboard"}, reference_scoreboard{"reference_scoreboard"},
+        systemc_scoreboard{"systemc_scoreboard"};
     sc_signal<sc_uint<2>> issue_valid{"issue_valid"}, complete_valid{"complete_valid"};
     sc_signal<sc_uint<2>> dispatch_count{"dispatch_count"}, rob_capacity{"rob_capacity"}, iq_capacity{"iq_capacity"};
     sc_signal<sc_uint<32>> issue_pc0{"issue_pc0"}, issue_pc1{"issue_pc1"};
@@ -90,8 +94,10 @@ public:
     explicit Testbench(sc_core::sc_module_name name) : sc_module(name) {
         bind_fetch(cpu, rtl_fetch);
         bind_fetch(reference, reference_fetch);
+        bind_fetch(systemc_cpu, systemc_fetch);
         bind_memory(memory, rtl_fetch);
         bind_memory(reference_memory, reference_fetch);
+        bind_memory(systemc_memory, systemc_fetch);
         cpu.retire0_valid(rtl_retire.valid[0]); cpu.retire1_valid(rtl_retire.valid[1]);
         cpu.retire0_pc(rtl_retire.pc[0]); cpu.retire1_pc(rtl_retire.pc[1]);
         cpu.retire0_rd(rtl_retire.rd[0]); cpu.retire1_rd(rtl_retire.rd[1]);
@@ -103,14 +109,22 @@ public:
         reference.retire_value(reference_retire.value[0]);
         reference.halted(reference_retire.halted); reference.fault(reference_retire.fault);
         reference.fault_code(reference_retire.code);
+        systemc_cpu.retire_valid(systemc_retire.valid[0]);
+        systemc_cpu.retire_pc(systemc_retire.pc[0]);
+        systemc_cpu.retire_rd(systemc_retire.rd[0]);
+        systemc_cpu.retire_value(systemc_retire.value[0]);
+        systemc_cpu.halted(systemc_retire.halted); systemc_cpu.fault(systemc_retire.fault);
+        systemc_cpu.fault_code(systemc_retire.code);
         bind_scoreboard(scoreboard, rtl_retire);
         bind_scoreboard(reference_scoreboard, reference_retire);
+        bind_scoreboard(systemc_scoreboard, systemc_retire);
         cpu.debug_issue_valid(issue_valid); cpu.debug_issue_pc0(issue_pc0); cpu.debug_issue_pc1(issue_pc1);
         cpu.debug_complete_valid(complete_valid); cpu.debug_complete_pc0(complete_pc0);
         cpu.debug_complete_pc1(complete_pc1); cpu.debug_dispatch_count(dispatch_count);
         cpu.debug_rob_capacity(rob_capacity); cpu.debug_iq_capacity(iq_capacity);
         SC_METHOD(filter_status);
-        sensitive << reserved_status << rtl_fetch.rsp_status << reference_fetch.rsp_status;
+        sensitive << reserved_status << rtl_fetch.rsp_status << reference_fetch.rsp_status
+                  << systemc_fetch.rsp_status;
         SC_METHOD(observe);
         sensitive << clock.posedge_event();
         dont_initialize();
@@ -142,9 +156,21 @@ private:
     void filter_status() {
         rtl_fetch.filtered_status.write(reserved_status.read() ? 3U : rtl_fetch.rsp_status.read().to_uint());
         reference_fetch.filtered_status.write(reserved_status.read() ? 3U : reference_fetch.rsp_status.read().to_uint());
+        systemc_fetch.filtered_status.write(reserved_status.read() ? 3U : systemc_fetch.rsp_status.read().to_uint());
     }
     void observe() {
-        if (reset.read()) { issued_.clear(); completed_.clear(); return; }
+        if (reset.read()) {
+            issued_.clear(); completed_.clear();
+            request_gap_ = max_request_gap_ = 0;
+            seen_request_ = false;
+            return;
+        }
+        ++request_gap_;
+        if (rtl_fetch.req_valid.read() && rtl_fetch.req_ready.read()) {
+            if (seen_request_) max_request_gap_ = std::max(max_request_gap_, request_gap_);
+            seen_request_ = true;
+            request_gap_ = 0;
+        }
         const unsigned issued = issue_valid.read().to_uint();
         if (issued == 3U) ++dual_issue_cycles_;
         if (rtl_retire.valid[1].read()) ++dual_retire_cycles_;
@@ -154,6 +180,7 @@ private:
         if ((issued & 1U) != 0U) issued_.push_back(issue_pc0.read().to_uint());
         if ((issued & 2U) != 0U) issued_.push_back(issue_pc1.read().to_uint());
         const unsigned completed = complete_valid.read().to_uint();
+        if (completed == 3U) ++dual_complete_cycles_;
         if ((completed & 1U) != 0U) completed_.push_back(complete_pc0.read().to_uint());
         if ((completed & 2U) != 0U) completed_.push_back(complete_pc1.read().to_uint());
     }
@@ -162,27 +189,76 @@ private:
         ++failures_;
     }
     void start(const std::vector<std::uint8_t>& program, InstructionMemory::Timing timing, bool reserved = false) {
+        rtl_cycles_.reset(); systemc_cycles_.reset();
+        elapsed_cycles_ = 0;
+        cycle_mismatch_ = false;
         reset.write(true);
         reserved_status.write(reserved);
         memory.set_timing(timing); reference_memory.set_timing(timing);
+        systemc_memory.set_timing(timing);
         memory.load_program(program); reference_memory.load_program(program);
+        systemc_memory.load_program(program);
         wait(clock.posedge_event());
         wait(clock.negedge_event());
+        compare_cycle_outputs();
         reset.write(false);
     }
     bool stopped(const RetireSignals& signals) const { return signals.halted.read() || signals.fault.read(); }
+    void compare_signal(const char* signal, std::uint32_t rtl, std::uint32_t systemc) {
+        if (rtl == systemc || cycle_mismatch_) return;
+        cycle_mismatch_ = true;
+        fail("cycle " + std::to_string(elapsed_cycles_) + " " + signal +
+             ": RTL=" + std::to_string(rtl) + " SystemC=" + std::to_string(systemc));
+    }
+    void compare_cycle_outputs() {
+        compare_signal("imem_req_valid", rtl_fetch.req_valid.read(), systemc_fetch.req_valid.read());
+        compare_signal("imem_req_ready", rtl_fetch.req_ready.read(), systemc_fetch.req_ready.read());
+        if (rtl_fetch.req_valid.read() || systemc_fetch.req_valid.read())
+            compare_signal("imem_req_addr", rtl_fetch.req_addr.read().to_uint(), systemc_fetch.req_addr.read().to_uint());
+        compare_signal("imem_rsp_valid", rtl_fetch.rsp_valid.read(), systemc_fetch.rsp_valid.read());
+        compare_signal("imem_rsp_ready", rtl_fetch.rsp_ready.read(), systemc_fetch.rsp_ready.read());
+        if (rtl_fetch.rsp_valid.read() || systemc_fetch.rsp_valid.read()) {
+            compare_signal("imem_rsp_data", rtl_fetch.rsp_data.read().to_uint(), systemc_fetch.rsp_data.read().to_uint());
+            compare_signal("imem_rsp_status", rtl_fetch.filtered_status.read().to_uint(),
+                           systemc_fetch.filtered_status.read().to_uint());
+        }
+        compare_signal("retire_valid", rtl_retire.valid[0].read(), systemc_retire.valid[0].read());
+        compare_signal("retire1_valid", rtl_retire.valid[1].read(), 0);
+        if (rtl_retire.valid[0].read() || systemc_retire.valid[0].read()) {
+            compare_signal("retire_pc", rtl_retire.pc[0].read().to_uint(), systemc_retire.pc[0].read().to_uint());
+            compare_signal("retire_rd", rtl_retire.rd[0].read().to_uint(), systemc_retire.rd[0].read().to_uint());
+            compare_signal("retire_value", rtl_retire.value[0].read().to_uint(), systemc_retire.value[0].read().to_uint());
+        }
+        compare_signal("halted", rtl_retire.halted.read(), systemc_retire.halted.read());
+        compare_signal("fault", rtl_retire.fault.read(), systemc_retire.fault.read());
+        compare_signal("fault_code", rtl_retire.code.read().to_uint(), systemc_retire.code.read().to_uint());
+    }
+    void sample_cycle() {
+        ++elapsed_cycles_;
+        rtl_cycles_.sample(stopped(rtl_retire));
+        systemc_cycles_.sample(stopped(systemc_retire));
+        compare_cycle_outputs();
+    }
     void check(const std::vector<std::uint8_t>& program, const ProgramTest* catalog = nullptr,
-               bool require_overlap = false) {
+               bool require_overlap = false, bool require_fetch_throttle = false) {
         const unsigned before = failures_;
         const unsigned timeout = 2000U + 128U * static_cast<unsigned>(program.size() / 4U);
         unsigned cycle = 0;
         for (; cycle < timeout; ++cycle) {
             wait(clock.negedge_event());
-            if (stopped(rtl_retire) && stopped(reference_retire)) break;
+            sample_cycle();
+            if (stopped(rtl_retire) && stopped(reference_retire) && stopped(systemc_retire)) break;
         }
         if (cycle == timeout) { fail("timeout"); return; }
         const auto& actual = scoreboard.state;
         const auto& expected = reference_scoreboard.state;
+        const auto& systemc = systemc_scoreboard.state;
+        if (systemc.protocol_error() || systemc.events() != expected.events())
+            fail("SystemC retirement trace differs from interpreter");
+        if (rtl_cycles_.cycles() != systemc_cycles_.cycles()) fail("elapsed cycle counts differ");
+        // Normal/stalled memories alone space requests 5/9 cycles apart.
+        if (require_fetch_throttle && max_request_gap_ <= 9U)
+            fail("full frontend did not throttle fetch requests");
         if (actual.protocol_error()) fail("invalid retirement protocol");
         if (actual.events() != expected.events()) {
             fail("retirement trace differs from SystemC reference (actual " +
@@ -224,19 +300,24 @@ private:
         const auto saved_count = actual.retirement_count();
         const bool saved_halt = rtl_retire.halted.read(), saved_fault = rtl_retire.fault.read();
         const auto saved_code = rtl_retire.code.read();
-        for (unsigned i = 0; i < 4; ++i) wait(clock.negedge_event());
+        for (unsigned i = 0; i < 4; ++i) {
+            wait(clock.negedge_event());
+            sample_cycle();
+        }
         if (actual.retirement_count() != saved_count || rtl_retire.halted.read() != saved_halt ||
             rtl_retire.fault.read() != saved_fault || rtl_retire.code.read() != saved_code ||
             rtl_fetch.req_valid.read()) fail("termination is not sticky and quiescent");
         ++programs_;
-        if (before == failures_) std::cout << "[PASS] " << active_name_ << '\n';
+        if (before == failures_ && !cycle_mismatch_) std::cout << "[PASS] " << active_name_
+            << " rtl_cycles=" << rtl_cycles_.cycles() << " systemc_cycles=" << systemc_cycles_.cycles()
+            << " retired=" << actual.retirement_count() << '\n';
     }
     void differential(const std::string& name, const std::vector<std::uint8_t>& program,
-                      bool require_overlap = false) {
+                      bool require_overlap = false, bool require_fetch_throttle = false) {
         for (unsigned mode = 0; mode < 2; ++mode) {
             active_name_ = name + (mode == 0 ? " [normal]" : " [stalled]");
             start(program, mode == 0 ? InstructionMemory::normal_timing() : InstructionMemory::stalled_timing());
-            check(program, nullptr, require_overlap);
+            check(program, nullptr, require_overlap, require_fetch_throttle);
         }
     }
     void run() {
@@ -266,11 +347,40 @@ private:
             reg(1, 4, 6, 1, 2), reg(1, 6, 7, 1, 2), reg(1, 7, 8, 1, 2),
             reg(1, 6, 9, 1, 0), reg(1, 0, 0, 1, 2), reg(1, 4, 0, 1, 2)}));
         differential("end of program drains long operation", bytes({reg(1, 4, 1, 0, 0)}));
+        differential("consecutive multiply and divide", bytes({
+            imm(0, 1, 0, 21), imm(0, 2, 0, 3),
+            reg(1, 0, 3, 1, 2), reg(1, 4, 4, 1, 2),
+            reg(1, 6, 5, 3, 4), reg(1, 0, 0, 3, 5)}));
+        std::vector<std::uint32_t> alu_traffic{
+            reg(1, 4, 1, 0, 0), reg(1, 0, 2, 0, 0)};
+        for (unsigned rd = 3; rd < 31; ++rd) alu_traffic.push_back(imm(0, rd, 0, rd));
+        differential("ALU traffic during consecutive long operations", bytes(alu_traffic));
+        // A seven-cycle response gives an 11-cycle fetch interval: the third
+        // independent ALU result coincides with the divide's publication edge.
+        active_name_ = "simultaneous ALU and divide completion [aligned fetch timing]";
+        const auto coincident = bytes({
+            reg(1, 4, 1, 0, 0), imm(0, 2, 0, 2), imm(0, 3, 0, 3), imm(0, 4, 0, 4)});
+        const unsigned completions_before = dual_complete_cycles_;
+        start(coincident, {0U, 7U});
+        check(coincident);
+        if (dual_complete_cycles_ == completions_before)
+            fail("directed program did not complete ALU and divide together");
+        std::vector<std::uint32_t> long_pressure;
+        for (unsigned i = 0; i < 64; ++i)
+            long_pressure.push_back(reg(1, i % 8U, 1U + i % 31U, 0, 0));
+        differential("sustained fetch and queue backpressure", bytes(long_pressure), false, true);
         differential("precise illegal after long operation", bytes({
             reg(1, 4, 1, 0, 0), imm(0, 2, 0, 4), 0xffffffffU, imm(0, 3, 0, 99)}));
         auto truncated = bytes({reg(1, 4, 1, 0, 0), imm(0, 2, 0, 4)});
         truncated.insert(truncated.end(), {0x13, 0, 0});
         differential("precise truncated fetch after valid prefix", truncated);
+        active_name_ = "illegal instruction drains presented fetch [long request stall]";
+        const auto early_illegal = bytes({0xffffffffU, imm(0, 1, 0, 99)});
+        start(early_illegal, {7U, 1U});
+        check(early_illegal);
+        active_name_ = "illegal instruction drains outstanding fetch [long response latency]";
+        start(early_illegal, {0U, 11U});
+        check(early_illegal);
         for (const auto illegal : {imm(1, 1, 0, 32), imm(5, 1, 0, 32), reg(2, 0, 1, 0, 0),
                                    0x00000037U, 0x00000017U, 0x00000003U, 0x00000063U, 0x00000073U})
             differential("strict illegal encoding " + std::to_string(illegal), bytes({imm(0, 1, 0, 5), illegal}));
@@ -286,7 +396,10 @@ private:
         for (const unsigned delay : {1U, 3U, 12U, 24U, 70U}) {
             active_name_ = "reset in flight after " + std::to_string(delay) + " cycles";
             start(bytes(pressure), InstructionMemory::stalled_timing());
-            for (unsigned i = 0; i < delay; ++i) wait(clock.negedge_event());
+            for (unsigned i = 0; i < delay; ++i) {
+                wait(clock.negedge_event());
+                sample_cycle();
+            }
             start(one, InstructionMemory::normal_timing());
             check(one);
         }
@@ -296,17 +409,26 @@ private:
         if (RTL_MODE == 0 && (dual_issue_cycles_ != 0 || dual_retire_cycles_ != 0))
             fail("single-issue width exceeded");
         if (RTL_MODE == 2 && reordered_programs_ == 0) fail("out-of-order bypass was not exercised");
+        if (dual_complete_cycles_ == 0) fail("simultaneous ALU and mul/div writeback was not exercised");
+        if (full_iq_cycles_ == 0 || full_rob_cycles_ == 0)
+            fail("issue and completion backpressure was not exercised");
         std::cout << "Programs=" << programs_ << " dual_issue_cycles=" << dual_issue_cycles_
                   << " dual_retire_cycles=" << dual_retire_cycles_ << " dual_dispatch_cycles=" << dual_dispatch_cycles_
                   << " reordered_programs=" << reordered_programs_ << " IQ_full=" << full_iq_cycles_
-                  << " ROB_full=" << full_rob_cycles_ << '\n';
+                  << " ROB_full=" << full_rob_cycles_
+                  << " dual_complete_cycles=" << dual_complete_cycles_ << '\n';
         if (failures_ == 0) std::cout << "All RTL differential tests passed\n";
         sc_core::sc_stop();
     }
     std::string active_name_;
+    ProgramCycleCounter rtl_cycles_, systemc_cycles_;
+    std::uint64_t elapsed_cycles_{};
+    bool cycle_mismatch_{};
     std::vector<std::uint32_t> issued_, completed_;
     unsigned failures_{0}, programs_{0}, dual_issue_cycles_{0}, dual_retire_cycles_{0};
     unsigned dual_dispatch_cycles_{0}, reordered_programs_{0}, full_iq_cycles_{0}, full_rob_cycles_{0};
+    unsigned dual_complete_cycles_{0}, request_gap_{0}, max_request_gap_{0};
+    bool seen_request_{};
 };
 } // namespace
 

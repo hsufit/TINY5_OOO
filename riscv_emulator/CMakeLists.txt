@@ -12,6 +12,12 @@ target_include_directories(rv32im_cpu PUBLIC include)
 target_link_libraries(rv32im_cpu PUBLIC SystemC::systemc)
 target_compile_options(rv32im_cpu PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
+# The original interpreter remains independent of the pipeline implementation.
+add_library(rv32im_reference_cpu src/rv32im_reference_cpu.cpp)
+target_include_directories(rv32im_reference_cpu PUBLIC include)
+target_link_libraries(rv32im_reference_cpu PUBLIC SystemC::systemc)
+target_compile_options(rv32im_reference_cpu PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
 add_library(instruction_memory src/instruction_memory.cpp)
 target_include_directories(instruction_memory PUBLIC include)
 target_link_libraries(instruction_memory PUBLIC SystemC::systemc)
