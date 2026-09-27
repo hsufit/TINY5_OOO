@@ -1,14 +1,15 @@
 # SystemC RV32IM Arithmetic Emulator
 
 This directory contains a cycle-accurate SystemC CPU for the arithmetic subset
-of RV32I and RV32M, matching `tiny5_single_inorder`. There are no
-branches, jumps, loads, stores, CSRs, traps, or system calls.
+of RV32I and RV32M, matching `tiny5_single_inorder` and `tiny5_dual_inorder`.
+There are no branches, jumps, loads, stores, CSRs, traps, or system calls.
 
 `Rv32imCpu` models the RTL frontend queues, operand dependencies, issue and
-completion queues, registered ALU, multiply/divide timing, two writeback lanes,
-and single-instruction retirement. Multiply/divide results are computed from
-captured operands and exposed after the RTL's 32 iteration edges and result
-publication edge. Independent ALU instructions can execute during those steps.
+completion queues, one or two registered ALUs, multiply/divide timing, two
+writeback lanes, and one or two retirement lanes. Multiply/divide results are
+computed from captured operands and exposed after the RTL's 32 iteration edges
+and result publication edge. Independent ALU instructions can execute during
+those steps.
 All stage transfers use pre-edge state; newly freed queue capacity is visible
 on the following cycle.
 
@@ -35,9 +36,13 @@ termination ports:
 ```text
 imem_req_valid/ready, imem_req_addr
 imem_rsp_valid/ready, imem_rsp_data, imem_rsp_status
-retire_valid, retire_pc, retire_rd, retire_value
+retire_valid, retire_pc, retire_rd, retire_value (lane 0)
+retire1_valid, retire1_pc, retire1_rd, retire1_value (lane 1)
 halted, fault, fault_code
 ```
+
+`Rv32imCpu(name, issue_width)` selects width 1 or 2; width 1 is the default.
+Lane 1 remains invalid at width 1.
 
 Instruction responses use `OK=0`, `END_OF_PROGRAM=1`, `ACCESS_FAULT=2`, and
 `RESERVED=3`. CPU faults use `NONE=0`, `ILLEGAL_INSTRUCTION=1`,
@@ -48,13 +53,13 @@ instruction emits one retirement event; an instruction targeting `x0` emits
 register zero and value zero.
 
 The test programs and typed expectations live in `test_catalog.cpp`. The
-`RetirementScoreboard` reconstructs all architectural registers solely from
+`DualRetirementScoreboard` reconstructs all architectural registers solely from
 retirement ports. The RTL differential runner gives each of the RTL CPU,
 SystemC pipeline, and interpreter its own identically configured memory. For
-the single issue RTL, it compares RTL/SystemC fetch handshakes, valid payloads,
-retirement, and termination every cycle. For the dual issue RTL, it checks both
-retirement lanes and termination against the interpreter's architectural trace.
-Both RTL configurations run the same test catalog and directed stress programs.
+both issue widths, it compares RTL/SystemC fetch handshakes, valid payloads,
+both retirement lanes, and termination every cycle. It also checks architectural
+traces against the independent interpreter. Both configurations run the same
+test catalog and directed stress programs.
 
 ## ADD/MUL sequence and cycle counts
 
@@ -98,8 +103,8 @@ On a host with CMake, a C++17 compiler, and SystemC installed:
 ./riscv_emulator/run.sh
 ```
 
-This builds with `-Wall -Wextra -Wpedantic -Werror` and runs both the CPU
-catalog test (including ADD/MUL) and the standalone memory-protocol test through
+This builds with `-Wall -Wextra -Wpedantic -Werror` and runs the CPU catalog at
+both widths (including ADD/MUL) and the standalone memory-protocol test through
 CTest, then prints the catalog results and cycle counts. Verilator is not
 required for this standalone build.
 

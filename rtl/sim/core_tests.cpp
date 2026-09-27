@@ -80,7 +80,7 @@ public:
     FetchSignals rtl_fetch{"rtl_fetch"}, reference_fetch{"reference_fetch"}, systemc_fetch{"systemc_fetch"};
     RetireSignals rtl_retire{"rtl_retire"}, reference_retire{"reference_retire"}, systemc_retire{"systemc_retire"};
     RtlCpuAdapter<RTL_MODEL_CLASS> cpu{"cpu"};
-    Rv32imCpu systemc_cpu{"systemc_cpu"};
+    Rv32imCpu systemc_cpu{"systemc_cpu", RTL_MODE == 1 ? 2U : 1U};
     Rv32imReferenceCpu reference{"reference"};
     InstructionMemory memory{"memory"}, reference_memory{"reference_memory"}, systemc_memory{"systemc_memory"};
     DualRetirementScoreboard scoreboard{"scoreboard"}, reference_scoreboard{"reference_scoreboard"},
@@ -113,6 +113,10 @@ public:
         systemc_cpu.retire_pc(systemc_retire.pc[0]);
         systemc_cpu.retire_rd(systemc_retire.rd[0]);
         systemc_cpu.retire_value(systemc_retire.value[0]);
+        systemc_cpu.retire1_valid(systemc_retire.valid[1]);
+        systemc_cpu.retire1_pc(systemc_retire.pc[1]);
+        systemc_cpu.retire1_rd(systemc_retire.rd[1]);
+        systemc_cpu.retire1_value(systemc_retire.value[1]);
         systemc_cpu.halted(systemc_retire.halted); systemc_cpu.fault(systemc_retire.fault);
         systemc_cpu.fault_code(systemc_retire.code);
         bind_scoreboard(scoreboard, rtl_retire);
@@ -211,9 +215,6 @@ private:
              ": RTL=" + std::to_string(rtl) + " SystemC=" + std::to_string(systemc));
     }
     void compare_cycle_outputs() {
-        // The SystemC pipeline models single-issue timing; both RTL widths
-        // are checked against the interpreter's retirement trace in check().
-        if (RTL_MODE != 0) return;
         compare_signal("imem_req_valid", rtl_fetch.req_valid.read(), systemc_fetch.req_valid.read());
         compare_signal("imem_req_ready", rtl_fetch.req_ready.read(), systemc_fetch.req_ready.read());
         if (rtl_fetch.req_valid.read() || systemc_fetch.req_valid.read())
@@ -226,11 +227,16 @@ private:
                            systemc_fetch.filtered_status.read().to_uint());
         }
         compare_signal("retire_valid", rtl_retire.valid[0].read(), systemc_retire.valid[0].read());
-        compare_signal("retire1_valid", rtl_retire.valid[1].read(), 0);
+        compare_signal("retire1_valid", rtl_retire.valid[1].read(), systemc_retire.valid[1].read());
         if (rtl_retire.valid[0].read() || systemc_retire.valid[0].read()) {
             compare_signal("retire_pc", rtl_retire.pc[0].read().to_uint(), systemc_retire.pc[0].read().to_uint());
             compare_signal("retire_rd", rtl_retire.rd[0].read().to_uint(), systemc_retire.rd[0].read().to_uint());
             compare_signal("retire_value", rtl_retire.value[0].read().to_uint(), systemc_retire.value[0].read().to_uint());
+        }
+        if (rtl_retire.valid[1].read() || systemc_retire.valid[1].read()) {
+            compare_signal("retire1_pc", rtl_retire.pc[1].read().to_uint(), systemc_retire.pc[1].read().to_uint());
+            compare_signal("retire1_rd", rtl_retire.rd[1].read().to_uint(), systemc_retire.rd[1].read().to_uint());
+            compare_signal("retire1_value", rtl_retire.value[1].read().to_uint(), systemc_retire.value[1].read().to_uint());
         }
         compare_signal("halted", rtl_retire.halted.read(), systemc_retire.halted.read());
         compare_signal("fault", rtl_retire.fault.read(), systemc_retire.fault.read());
@@ -258,8 +264,7 @@ private:
         const auto& systemc = systemc_scoreboard.state;
         if (systemc.protocol_error() || systemc.events() != expected.events())
             fail("SystemC retirement trace differs from interpreter");
-        if (RTL_MODE == 0 && rtl_cycles_.cycles() != systemc_cycles_.cycles())
-            fail("elapsed cycle counts differ");
+        if (rtl_cycles_.cycles() != systemc_cycles_.cycles()) fail("elapsed cycle counts differ");
         // Normal/stalled memories alone space requests 5/9 cycles apart.
         if (require_fetch_throttle && max_request_gap_ <= 9U)
             fail("full frontend did not throttle fetch requests");

@@ -1,7 +1,7 @@
 #include "cpu_protocol.h"
+#include "dual_retirement_scoreboard.h"
 #include "instruction_memory.h"
 #include "program_cycle_counter.h"
-#include "retirement_scoreboard.h"
 #include "rv32im_cpu.h"
 #include "test_catalog.h"
 
@@ -29,13 +29,17 @@ public:
     sc_core::sc_signal<sc_dt::sc_uint<32>> retire_pc{"retire_pc"};
     sc_core::sc_signal<sc_dt::sc_uint<5>> retire_rd{"retire_rd"};
     sc_core::sc_signal<sc_dt::sc_uint<32>> retire_value{"retire_value"};
+    sc_core::sc_signal<bool> retire1_valid{"retire1_valid"};
+    sc_core::sc_signal<sc_dt::sc_uint<32>> retire1_pc{"retire1_pc"};
+    sc_core::sc_signal<sc_dt::sc_uint<5>> retire1_rd{"retire1_rd"};
+    sc_core::sc_signal<sc_dt::sc_uint<32>> retire1_value{"retire1_value"};
     sc_core::sc_signal<bool> halted{"halted"};
     sc_core::sc_signal<bool> fault{"fault"};
     sc_core::sc_signal<sc_dt::sc_uint<2>> fault_code{"fault_code"};
 
-    Rv32imCpu cpu{"cpu"};
+    Rv32imCpu cpu{"cpu", RV32IM_ISSUE_WIDTH};
     InstructionMemory memory{"memory"};
-    RetirementScoreboard scoreboard{"scoreboard"};
+    DualRetirementScoreboard scoreboard{"scoreboard"};
 
     SC_HAS_PROCESS(Rv32imTestbench);
     explicit Rv32imTestbench(sc_core::sc_module_name name) : sc_core::sc_module(name) {
@@ -52,6 +56,10 @@ public:
         cpu.retire_pc(retire_pc);
         cpu.retire_rd(retire_rd);
         cpu.retire_value(retire_value);
+        cpu.retire1_valid(retire1_valid);
+        cpu.retire1_pc(retire1_pc);
+        cpu.retire1_rd(retire1_rd);
+        cpu.retire1_value(retire1_value);
         cpu.halted(halted);
         cpu.fault(fault);
         cpu.fault_code(fault_code);
@@ -68,10 +76,14 @@ public:
 
         scoreboard.clk(clock);
         scoreboard.reset(reset);
-        scoreboard.retire_valid(retire_valid);
-        scoreboard.retire_pc(retire_pc);
-        scoreboard.retire_rd(retire_rd);
-        scoreboard.retire_value(retire_value);
+        scoreboard.valid[0](retire_valid);
+        scoreboard.pc[0](retire_pc);
+        scoreboard.rd[0](retire_rd);
+        scoreboard.value[0](retire_value);
+        scoreboard.valid[1](retire1_valid);
+        scoreboard.pc[1](retire1_pc);
+        scoreboard.rd[1](retire1_rd);
+        scoreboard.value[1](retire1_value);
 
         SC_THREAD(run);
     }
@@ -122,18 +134,18 @@ private:
         if (actual_fault != test.expected_fault) {
             fail(name, "incorrect fault code");
         }
-        if (scoreboard.protocol_error()) {
+        if (scoreboard.state.protocol_error()) {
             fail(name, "invalid retirement event for x0");
         }
-        if (scoreboard.retirement_count() != test.expected_retirement_count) {
+        if (scoreboard.state.retirement_count() != test.expected_retirement_count) {
             fail(name, "incorrect retirement count");
         }
-        if (scoreboard.retirement_pcs() != test.expected_retirement_pcs) {
+        if (scoreboard.state.retirement_pcs() != test.expected_retirement_pcs) {
             fail(name, "incorrect retirement PC sequence");
         }
 
         for (const RegisterExpectation& item : test.expected_registers) {
-            const std::uint32_t actual = scoreboard.reg(item.index);
+            const std::uint32_t actual = scoreboard.state.reg(item.index);
             if (actual != item.value) {
                 std::cerr << "[FAIL] " << name << ": x" << item.index << " was 0x"
                           << std::hex << std::setw(8) << std::setfill('0') << actual
@@ -146,20 +158,20 @@ private:
         const bool saved_halt = halted.read();
         const bool saved_fault = fault.read();
         const unsigned saved_code = fault_code.read().to_uint();
-        const auto saved_count = scoreboard.retirement_count();
+        const auto saved_count = scoreboard.state.retirement_count();
         wait(clock.posedge_event());
         wait(clock.posedge_event());
         wait(clock.negedge_event());
         if (halted.read() != saved_halt || fault.read() != saved_fault ||
             fault_code.read().to_uint() != saved_code ||
-            scoreboard.retirement_count() != saved_count || retire_valid.read() ||
+            scoreboard.state.retirement_count() != saved_count || retire_valid.read() || retire1_valid.read() ||
             imem_req_valid.read() || imem_rsp_ready.read()) {
             fail(name, "termination outputs were not sticky and quiescent");
         }
 
         if (failures_ == failures_before) {
             std::cout << "[PASS] " << name << " cycles=" << cycles_.cycles()
-                      << " retired=" << scoreboard.retirement_count() << '\n';
+                      << " retired=" << scoreboard.state.retirement_count() << '\n';
         }
     }
 

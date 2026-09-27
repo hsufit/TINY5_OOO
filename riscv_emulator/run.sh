@@ -8,3 +8,4 @@ cmake -S "$script_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Debug
 cmake --build "$build_dir" -j2
 ctest --test-dir "$build_dir" --output-on-failure
 "$build_dir/rv32im_tests"
+"$build_dir/rv32im_dual_tests"

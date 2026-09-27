@@ -8,6 +8,7 @@
 #include <cstring>
 #include <deque>
 #include <limits>
+#include <stdexcept>
 
 namespace {
 
@@ -161,10 +162,11 @@ Result execute(const Execute& e) {
 
 }  // namespace
 
-// State corresponds to core_pipeline with ISSUE_WIDTH=1, OUT_OF_ORDER=0.
-// Two-wide frontend transfers and two writeback lanes remain active in that RTL.
+// Models core_pipeline with ISSUE_WIDTH=1 or 2 and OUT_OF_ORDER=0.
 struct Rv32imCpu::Pipeline {
     static constexpr unsigned kIqDepth = 8, kRobDepth = 16;
+    explicit Pipeline(unsigned width) : issue_width(width) {}
+    unsigned issue_width;
     bool req_valid{}, outstanding{}, fetch_local_stopped{}, fetch_stopped{}, terminal_enqueued{};
     std::uint32_t req_addr{}, fetch_pc{}, pending_pc{};
     Slot<Fetch> fetched{};
@@ -176,24 +178,28 @@ struct Rv32imCpu::Pipeline {
     std::array<std::uint32_t, 32> registers{};
     std::array<bool, 32> busy{};
     std::array<unsigned, 32> producer{};
-    Slot<Execute> issue2ex{};
-    Slot<Result> alu{}, md_output{};
+    std::array<Slot<Execute>, 2> issue2ex{};
+    std::array<Slot<Result>, 2> alu{};
+    Slot<Result> md_output{};
     bool md_busy{};
     unsigned md_step{}, arbiter_next{};
     Result md_result{};
     std::array<Slot<Result>, 2> ex2wb{};
-    Slot<Result> retired{};
+    std::array<Slot<Result>, 2> retired{};
     bool halted{}, fault{};
     unsigned fault_code{};
 
     struct Controls {
-        bool stop{}, rsp_ready{}, finish{}, retire{}, dispatch{}, terminal_dispatch{};
-        unsigned fifo_pop{}, id_pop{};
-        Issue prepared{};
+        bool stop{}, rsp_ready{}, finish{}, terminal_dispatch{};
+        unsigned fifo_pop{}, id_pop{}, retire_count{}, dispatch_count{};
+        std::array<Issue, 2> prepared{};
         std::array<bool, 2> wb_valid{};
         std::array<int, 2> grants{-1, -1};
-        bool alu_ready{}, md_ready{}, ex_ready{};
-        int issue_index{-1};
+        std::array<bool, 2> alu_ready{}, ex_ready{};
+        std::array<int, 2> ex_unit{-1, -1};
+        bool md_ready{};
+        int md_input{-1};
+        std::array<int, 2> issue_index{-1, -1};
     };
 
     Operand operand(unsigned reg) const {
@@ -211,25 +217,46 @@ struct Rv32imCpu::Pipeline {
             (c.stop || fetch_local_stopped || !fetched.valid || fifo.size() < 8U);
         const bool idle = !req_valid && !outstanding && !fetched.valid;
         if (!halted && !fault && count != 0U && rob[head].done) {
-            c.retire = !rob[head].terminal;
-            c.finish = rob[head].terminal && idle;
+            if (rob[head].terminal) c.finish = idle;
+            else {
+                c.retire_count = 1;
+                const unsigned second = (head + 1U) % kRobDepth;
+                if (issue_width == 2 && count > 1U && rob[second].done && !rob[second].terminal)
+                    c.retire_count = 2;
+            }
         }
         c.fifo_pop = static_cast<unsigned>(std::min({fifo.size(), std::size_t{2}, 2U - if2id.size()}));
         c.id_pop = static_cast<unsigned>(std::min(if2id.size(), 2U - id2dispatch.size()));
-        const bool iq_space = std::any_of(iq.begin(), iq.end(), [](const Issue& i) { return !i.valid; });
-        if (!reset && !terminal_enqueued && !halted && !fault &&
-            !id2dispatch.empty() && count < kRobDepth && iq_space) {
-            const auto& d = id2dispatch.front();
-            c.dispatch = d.terminal || d.rd == 0U || !busy[d.rd];
-            c.terminal_dispatch = c.dispatch && d.terminal;
-            c.prepared = {true, {d.pc, d.rd, tail}, d.op, operand(d.rs1), operand(d.rs2)};
-            if (d.immediate_b) c.prepared.b = {true, 0, d.immediate};
+        const unsigned iq_space = static_cast<unsigned>(std::count_if(
+            iq.begin(), iq.end(), [](const Issue& entry) { return !entry.valid; }));
+        unsigned offer_count = std::min({static_cast<unsigned>(id2dispatch.size()), issue_width,
+                                         kRobDepth - count, iq_space});
+        if (reset || terminal_enqueued || halted || fault) offer_count = 0;
+        auto candidate_busy = busy;
+        for (unsigned p = 0; p < offer_count; ++p) {
+            const auto& d = id2dispatch[p];
+            c.prepared[p] = {true, {d.pc, d.rd, (tail + p) % kRobDepth}, d.op,
+                             operand(d.rs1), operand(d.rs2)};
+            if (d.terminal) {
+                ++c.dispatch_count;
+                c.terminal_dispatch = true;
+                break;
+            }
+            if (d.rd != 0U && candidate_busy[d.rd]) break;
+            if (p == 1U && !id2dispatch[0].terminal && id2dispatch[0].rd != 0U) {
+                const unsigned older_rd = id2dispatch[0].rd;
+                if (d.rs1 == older_rd) c.prepared[p].a = {false, d.rs1, 0};
+                if (!d.immediate_b && d.rs2 == older_rd) c.prepared[p].b = {false, d.rs2, 0};
+            }
+            if (d.immediate_b) c.prepared[p].b = {true, 0, d.immediate};
+            ++c.dispatch_count;
+            if (d.rd != 0U) candidate_busy[d.rd] = true;
         }
         for (unsigned p = 0; p < 2; ++p)
             c.wb_valid[p] = ex2wb[p].valid && !c.finish && !halted && !fault;
 
-        // Match the three-unit round-robin arbiter; unit 1 is disabled.
-        const std::array<bool, 3> valid{alu.valid, false, md_output.valid};
+        const std::array<bool, 3> valid{alu[0].valid, issue_width == 2 && alu[1].valid,
+                                         md_output.valid};
         std::array<bool, 3> used{};
         for (unsigned p = 0; p < 2; ++p) {
             for (unsigned offset = 0; offset < 3; ++offset) {
@@ -241,25 +268,53 @@ struct Rv32imCpu::Pipeline {
                 }
             }
         }
-        c.alu_ready = !alu.valid || used[0];
+        for (unsigned u = 0; u < issue_width; ++u)
+            c.alu_ready[u] = !alu[u].valid || used[u];
         c.md_ready = !md_busy && (!md_output.valid || used[2]);
-        c.ex_ready = muldiv(issue2ex.data.op) ? c.md_ready : c.alu_ready;
-        const bool issue_ready = (!issue2ex.valid || c.ex_ready) &&
-                                 !reset && !c.finish && !halted && !fault;
-        unsigned best_age = kRobDepth;
-        int oldest = -1;
-        for (unsigned i = 0; i < kIqDepth; ++i) {
-            const unsigned age = (iq[i].meta.tag + kRobDepth - head) % kRobDepth;
-            if (iq[i].valid && age < best_age) {
-                best_age = age;
-                oldest = static_cast<int>(i);
+        std::array<bool, 3> unit_used{};
+        for (unsigned p = 0; p < 2; ++p) {
+            int selected = -1;
+            if (muldiv(issue2ex[p].data.op)) {
+                if (c.md_ready && !unit_used[2]) selected = 2;
+            } else {
+                for (unsigned u = 0; u < issue_width; ++u)
+                    if (c.alu_ready[u] && !unit_used[u] && selected < 0)
+                        selected = static_cast<int>(u);
+            }
+            if (selected >= 0) {
+                c.ex_ready[p] = true;
+                if (issue2ex[p].valid) {
+                    unit_used[static_cast<unsigned>(selected)] = true;
+                    if (selected == 2) c.md_input = static_cast<int>(p);
+                    else c.ex_unit[p] = selected;
+                }
             }
         }
-        if (issue_ready && oldest >= 0) {
+
+        bool blocked = false;
+        bool md_used = false;
+        const bool md_issue_available = c.md_ready &&
+            !(issue2ex[0].valid && muldiv(issue2ex[0].data.op)) &&
+            !(issue2ex[1].valid && muldiv(issue2ex[1].data.op));
+        for (unsigned p = 0; p < issue_width; ++p) {
+            unsigned best_age = kRobDepth;
+            int oldest = -1;
+            for (unsigned i = 0; i < kIqDepth; ++i) {
+                const unsigned age = (iq[i].meta.tag + kRobDepth - head) % kRobDepth;
+                if (iq[i].valid && i != static_cast<unsigned>(c.issue_index[0]) && age < best_age) {
+                    best_age = age;
+                    oldest = static_cast<int>(i);
+                }
+            }
+            const bool stage_ready = !issue2ex[p].valid || c.ex_ready[p];
+            if (!stage_ready || blocked || reset || c.finish || halted || fault || oldest < 0) continue;
             const auto& entry = iq[static_cast<unsigned>(oldest)];
-            const bool md_available = c.md_ready && !(issue2ex.valid && muldiv(issue2ex.data.op));
-            if (entry.a.ready && entry.b.ready && (!muldiv(entry.op) || md_available))
-                c.issue_index = oldest;
+            if (!entry.a.ready || !entry.b.ready ||
+                (muldiv(entry.op) && (!md_issue_available || md_used))) blocked = true;
+            else {
+                c.issue_index[p] = oldest;
+                if (muldiv(entry.op)) md_used = true;
+            }
         }
         return c;
     }
@@ -302,17 +357,19 @@ struct Rv32imCpu::Pipeline {
                 next.fifo.push_back(fetched.data);
             for (unsigned i = 0; i < c.id_pop; ++i) next.if2id.pop_front();
             for (unsigned i = 0; i < c.fifo_pop; ++i) next.if2id.push_back(fifo[i]);
-            if (c.dispatch) next.id2dispatch.pop_front();
+            for (unsigned p = 0; p < c.dispatch_count; ++p) next.id2dispatch.pop_front();
             for (unsigned i = 0; i < c.id_pop; ++i) next.id2dispatch.push_back(decode(if2id[i]));
         }
 
-        next.retired.valid = c.retire;
-        if (c.retire) {
-            next.retired.data = rob[head].result;
-            const unsigned rd = rob[head].result.meta.rd;
-            if (rd != 0U) {
-                next.registers[rd] = rob[head].result.value;
-                next.busy[rd] = false;
+        for (unsigned p = 0; p < 2; ++p) {
+            next.retired[p].valid = p < c.retire_count;
+            if (p < c.retire_count) {
+                const auto& result = rob[(head + p) % kRobDepth].result;
+                next.retired[p].data = result;
+                if (result.meta.rd != 0U) {
+                    next.registers[result.meta.rd] = result.value;
+                    next.busy[result.meta.rd] = false;
+                }
             }
         }
         if (c.finish) {
@@ -341,28 +398,30 @@ struct Rv32imCpu::Pipeline {
                     next.rob[result.meta.tag].result.value = result.value;
                 }
             }
-            if (c.retire) {
-                next.rob[head].valid = false;
-                next.head = (head + 1U) % kRobDepth;
-                --next.count;
+            for (unsigned p = 0; p < c.retire_count; ++p) {
+                next.rob[(head + p) % kRobDepth].valid = false;
             }
-            if (c.dispatch) {
-                const auto& d = id2dispatch.front();
-                next.rob[tail] = {true, d.terminal, d.terminal, d.fault, {c.prepared.meta, 0}};
-                next.tail = (tail + 1U) % kRobDepth;
-                ++next.count;
+            next.head = (head + c.retire_count) % kRobDepth;
+            next.tail = (tail + c.dispatch_count) % kRobDepth;
+            next.count = count + c.dispatch_count - c.retire_count;
+            for (unsigned p = 0; p < c.dispatch_count; ++p) {
+                const auto& d = id2dispatch[p];
+                next.rob[(tail + p) % kRobDepth] =
+                    {true, d.terminal, d.terminal, d.fault, {c.prepared[p].meta, 0}};
                 if (!d.terminal && d.rd != 0U) {
                     next.busy[d.rd] = true;
-                    next.producer[d.rd] = tail;
+                    next.producer[d.rd] = (tail + p) % kRobDepth;
                 }
             }
 
-            if (c.issue_index >= 0) next.iq[static_cast<unsigned>(c.issue_index)].valid = false;
-            if (c.dispatch && !c.terminal_dispatch) {
+            for (int index : c.issue_index)
+                if (index >= 0) next.iq[static_cast<unsigned>(index)].valid = false;
+            for (unsigned p = 0; p < c.dispatch_count; ++p) {
+                if (id2dispatch[p].terminal) continue;
                 const auto free = std::find_if(next.iq.begin(), next.iq.end(),
                                               [](const Issue& i) { return !i.valid; });
                 assert(free != next.iq.end());
-                *free = c.prepared;
+                *free = c.prepared[p];
             }
             // Wake newly enqueued operands too, but issue sees pre-edge readiness.
             for (auto& entry : next.iq) {
@@ -378,23 +437,29 @@ struct Rv32imCpu::Pipeline {
                 }
             }
 
-            if (!issue2ex.valid || c.ex_ready) {
-                next.issue2ex.valid = c.issue_index >= 0;
-                if (c.issue_index >= 0) {
-                    const auto& entry = iq[static_cast<unsigned>(c.issue_index)];
-                    next.issue2ex.data = {entry.meta, entry.op, entry.a.value, entry.b.value};
+            for (unsigned p = 0; p < 2; ++p) {
+                if (!issue2ex[p].valid || c.ex_ready[p]) {
+                    next.issue2ex[p].valid = c.issue_index[p] >= 0;
+                    if (c.issue_index[p] >= 0) {
+                        const auto& entry = iq[static_cast<unsigned>(c.issue_index[p])];
+                        next.issue2ex[p].data = {entry.meta, entry.op, entry.a.value, entry.b.value};
+                    }
                 }
             }
-            if (c.alu_ready) {
-                next.alu.valid = issue2ex.valid && !muldiv(issue2ex.data.op);
-                if (next.alu.valid) next.alu.data = execute(issue2ex.data);
+            for (unsigned u = 0; u < issue_width; ++u) {
+                if (!c.alu_ready[u]) continue;
+                next.alu[u].valid = false;
+                for (unsigned p = 0; p < 2; ++p)
+                    if (c.ex_unit[p] == static_cast<int>(u)) {
+                        next.alu[u] = {true, execute(issue2ex[p].data)};
+                    }
             }
             const bool md_granted = c.grants[0] == 2 || c.grants[1] == 2;
             if (md_granted) next.md_output.valid = false;
-            if (issue2ex.valid && muldiv(issue2ex.data.op) && c.md_ready) {
+            if (c.md_input >= 0) {
                 next.md_busy = true;
                 next.md_step = 0;
-                next.md_result = execute(issue2ex.data);
+                next.md_result = execute(issue2ex[static_cast<unsigned>(c.md_input)].data);
             } else if (md_busy) {
                 if (md_step < 32U) next.md_step = md_step + 1U;
                 else {
@@ -405,19 +470,24 @@ struct Rv32imCpu::Pipeline {
             for (unsigned p = 0; p < 2; ++p) {
                 next.ex2wb[p].valid = c.grants[p] >= 0;
                 if (c.grants[p] >= 0) {
-                    next.ex2wb[p].data = c.grants[p] == 0 ? alu.data : md_output.data;
+                    const unsigned unit = static_cast<unsigned>(c.grants[p]);
+                    next.ex2wb[p].data = unit == 2 ? md_output.data : alu[unit].data;
                     next.arbiter_next = (static_cast<unsigned>(c.grants[p]) + 1U) % 3U;
                 }
             }
         }
+        assert(c.dispatch_count <= issue_width && c.retire_count <= issue_width);
         assert(next.fifo.size() <= 8U && next.if2id.size() <= 2U && next.id2dispatch.size() <= 2U);
         assert(next.count <= kRobDepth && next.registers[0] == 0U);
+        assert(!next.retired[1].valid || next.retired[0].valid);
+        assert(issue_width == 2U || !next.issue2ex[1].valid);
         *this = std::move(next);
     }
 };
 
-Rv32imCpu::Rv32imCpu(sc_core::sc_module_name name)
-    : sc_core::sc_module(name), pipeline_(std::make_unique<Pipeline>()) {
+Rv32imCpu::Rv32imCpu(sc_core::sc_module_name name, unsigned issue_width)
+    : sc_core::sc_module(name), issue_width_(issue_width), pipeline_(std::make_unique<Pipeline>(issue_width)) {
+    if (issue_width != 1U && issue_width != 2U) throw std::invalid_argument("issue_width must be 1 or 2");
     SC_METHOD(tick);
     sensitive << clk.pos();
     dont_initialize();
@@ -427,7 +497,7 @@ Rv32imCpu::Rv32imCpu(sc_core::sc_module_name name)
 Rv32imCpu::~Rv32imCpu() = default;
 
 void Rv32imCpu::tick() {
-    if (reset.read()) *pipeline_ = Pipeline{};
+    if (reset.read()) *pipeline_ = Pipeline{issue_width_};
     else {
         const auto controls = pipeline_->controls(false);
         pipeline_->advance(controls, imem_req_ready.read(), imem_rsp_valid.read(),
@@ -441,10 +511,14 @@ void Rv32imCpu::drive_outputs() {
     imem_req_valid.write(p.req_valid);
     imem_req_addr.write(p.req_addr);
     imem_rsp_ready.write(p.controls(false).rsp_ready);
-    retire_valid.write(p.retired.valid);
-    retire_pc.write(p.retired.data.meta.pc);
-    retire_rd.write(p.retired.data.meta.rd);
-    retire_value.write(p.retired.data.value);
+    retire_valid.write(p.retired[0].valid);
+    retire_pc.write(p.retired[0].data.meta.pc);
+    retire_rd.write(p.retired[0].data.meta.rd);
+    retire_value.write(p.retired[0].data.value);
+    retire1_valid.write(p.retired[1].valid);
+    retire1_pc.write(p.retired[1].data.meta.pc);
+    retire1_rd.write(p.retired[1].data.meta.rd);
+    retire1_value.write(p.retired[1].data.value);
     halted.write(p.halted);
     fault.write(p.fault);
     fault_code.write(p.fault_code);
