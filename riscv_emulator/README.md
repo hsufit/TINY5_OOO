@@ -50,13 +50,15 @@ register zero and value zero.
 The test programs and typed expectations live in `test_catalog.cpp`. The
 `RetirementScoreboard` reconstructs all architectural registers solely from
 retirement ports. The RTL differential runner gives each of the RTL CPU,
-SystemC pipeline, and interpreter its own identically configured memory.
-It compares RTL/SystemC fetch handshakes, valid payloads, retirement, and
-termination every cycle, and checks architectural traces against the interpreter.
+SystemC pipeline, and interpreter its own identically configured memory. For
+the single issue RTL, it compares RTL/SystemC fetch handshakes, valid payloads,
+retirement, and termination every cycle. For the dual issue RTL, it checks both
+retirement lanes and termination against the interpreter's architectural trace.
+Both RTL configurations run the same test catalog and directed stress programs.
 
 ## ADD/MUL sequence and cycle counts
 
-The SystemC catalog and `rtl_add_mul_waveform` share the same program bytes
+The SystemC catalog and both RTL waveform tests share the same program bytes
 through `rv32im_add_mul_test()`:
 
 ```asm
@@ -101,14 +103,14 @@ catalog test (including ADD/MUL) and the standalone memory-protocol test through
 CTest, then prints the catalog results and cycle counts. Verilator is not
 required for this standalone build.
 
-For cycle comparison against RTL, with Verilator installed:
+For RTL tests, with Verilator installed:
 
 ```sh
 ./rtl/run.sh
 ```
 
-This also runs the existing RTL waveform test. To run all regressions from a
-fresh build directory:
+This runs both RTL configurations and writes ADD/MUL waveforms for each. To run
+all regressions from a fresh build directory:
 
 ```sh
 cmake -S . -B /tmp/tiny5-build -DBUILD_TESTING=ON -DTINY5_BUILD_RTL=ON

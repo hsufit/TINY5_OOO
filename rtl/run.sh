@@ -16,6 +16,10 @@ fi
         -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
         --top-module tiny5_single_inorder \
         -f rtl/filelists/single_inorder.f
+    verilator --lint-only --assert -Wall \
+        -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
+        --top-module tiny5_dual_inorder \
+        -f rtl/filelists/dual_inorder.f
 )
 
 cmake -S "$project_dir" -B "$build_dir" \
@@ -23,7 +27,9 @@ cmake -S "$project_dir" -B "$build_dir" \
     -DBUILD_TESTING=ON \
     -DTINY5_BUILD_RTL=ON
 cmake --build "$build_dir" \
-    --target rtl_single_inorder_tests rtl_add_mul_waveform --parallel 2
+    --target rtl_single_inorder_tests rtl_dual_inorder_tests \
+        rtl_add_mul_waveform rtl_dual_add_mul_waveform --parallel 2
 ctest --test-dir "$build_dir" --verbose \
-    -R '^(rtl_single_inorder|rtl_add_mul_waveform)$' --output-on-failure
-printf 'Waveform: %s\n' "$build_dir/rtl/add_mul.fst"
+    -R '^(rtl_single_inorder|rtl_dual_inorder|rtl_add_mul_waveform|rtl_dual_add_mul_waveform)$' \
+    --output-on-failure
+printf 'Waveforms: %s %s\n' "$build_dir/rtl/add_mul.fst" "$build_dir/rtl/add_mul_dual.fst"

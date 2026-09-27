@@ -132,7 +132,8 @@ private:
         if (!cycles.stopped()) fail("timed out");
         if (fault.read()) fail("unexpected processor fault " + std::to_string(fault_code.read().to_uint()));
         if (!halted.read()) fail("processor did not halt");
-        if (lane1_retired_) fail("retirement lane 1 was used by a single-issue core");
+        if (RTL_MODE == 0 && lane1_retired_)
+            fail("retirement lane 1 was used by a single-issue core");
         if (scoreboard.state.protocol_error()) fail("invalid retirement protocol");
         if (scoreboard.state.events() != expected) fail("retirement trace or result values differ");
 

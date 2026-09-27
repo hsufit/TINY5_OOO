@@ -211,6 +211,9 @@ private:
              ": RTL=" + std::to_string(rtl) + " SystemC=" + std::to_string(systemc));
     }
     void compare_cycle_outputs() {
+        // The SystemC pipeline models single-issue timing; both RTL widths
+        // are checked against the interpreter's retirement trace in check().
+        if (RTL_MODE != 0) return;
         compare_signal("imem_req_valid", rtl_fetch.req_valid.read(), systemc_fetch.req_valid.read());
         compare_signal("imem_req_ready", rtl_fetch.req_ready.read(), systemc_fetch.req_ready.read());
         if (rtl_fetch.req_valid.read() || systemc_fetch.req_valid.read())
@@ -255,7 +258,8 @@ private:
         const auto& systemc = systemc_scoreboard.state;
         if (systemc.protocol_error() || systemc.events() != expected.events())
             fail("SystemC retirement trace differs from interpreter");
-        if (rtl_cycles_.cycles() != systemc_cycles_.cycles()) fail("elapsed cycle counts differ");
+        if (RTL_MODE == 0 && rtl_cycles_.cycles() != systemc_cycles_.cycles())
+            fail("elapsed cycle counts differ");
         // Normal/stalled memories alone space requests 5/9 cycles apart.
         if (require_fetch_throttle && max_request_gap_ <= 9U)
             fail("full frontend did not throttle fetch requests");
