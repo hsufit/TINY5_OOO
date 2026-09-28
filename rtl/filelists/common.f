@@ -19,4 +19,7 @@ rtl/lib/retire_unit.sv
 rtl/lib/issue_queue.sv
 rtl/control/inorder_scheduler.sv
 rtl/control/inorder_operands.sv
+rtl/control/free_list.sv
+rtl/control/rename_control.sv
+rtl/control/ooo_scheduler.sv
 rtl/lib/core_pipeline.sv

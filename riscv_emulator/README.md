@@ -1,7 +1,8 @@
 # SystemC RV32IM Arithmetic Emulator
 
 This directory contains a cycle-accurate SystemC CPU for the arithmetic subset
-of RV32I and RV32M, matching `tiny5_single_inorder` and `tiny5_dual_inorder`.
+of RV32I and RV32M, matching the single and dual-issue in-order cores and the
+dual-issue out-of-order core.
 There are no branches, jumps, loads, stores, CSRs, traps, or system calls.
 
 `Rv32imCpu` models the RTL frontend queues, operand dependencies, issue and
@@ -41,8 +42,9 @@ retire1_valid, retire1_pc, retire1_rd, retire1_value (lane 1)
 halted, fault, fault_code
 ```
 
-`Rv32imCpu(name, issue_width)` selects width 1 or 2; width 1 is the default.
-Lane 1 remains invalid at width 1.
+`Rv32imCpu(name, issue_width, scheduling_mode)` selects width 1 or 2 and
+in-order or out-of-order scheduling. The defaults are width 1 and in-order;
+out-of-order mode requires width 2. Lane 1 remains invalid at width 1.
 
 Instruction responses use `OK=0`, `END_OF_PROGRAM=1`, `ACCESS_FAULT=2`, and
 `RESERVED=3`. CPU faults use `NONE=0`, `ILLEGAL_INSTRUCTION=1`,
@@ -58,12 +60,13 @@ retirement ports. The RTL differential runner gives each of the RTL CPU,
 SystemC pipeline, and interpreter its own identically configured memory. For
 both issue widths, it compares RTL/SystemC fetch handshakes, valid payloads,
 both retirement lanes, and termination every cycle. It also checks architectural
-traces against the independent interpreter. Both configurations run the same
-test catalog and directed stress programs.
+traces against the independent interpreter. The dual-issue out-of-order RTL
+uses the same catalog and stress programs and is compared cycle by cycle with
+the out-of-order SystemC mode.
 
 ## ADD/MUL sequence and cycle counts
 
-The SystemC catalog and both RTL waveform tests share the same program bytes
+The SystemC catalog and all three RTL waveform tests share the same program bytes
 through `rv32im_add_mul_test()`:
 
 ```asm
@@ -103,10 +106,10 @@ On a host with CMake, a C++17 compiler, and SystemC installed:
 ./riscv_emulator/run.sh
 ```
 
-This builds with `-Wall -Wextra -Wpedantic -Werror` and runs the CPU catalog at
-both widths (including ADD/MUL) and the standalone memory-protocol test through
-CTest, then prints the catalog results and cycle counts. Verilator is not
-required for this standalone build.
+This builds with `-Wall -Wextra -Wpedantic -Werror` and runs the CPU catalog in
+all three configurations (including ADD/MUL) and the standalone memory-protocol
+test through CTest, then prints the catalog results and cycle counts. Verilator
+is not required for this standalone build.
 
 For RTL tests, with Verilator installed:
 
@@ -114,7 +117,7 @@ For RTL tests, with Verilator installed:
 ./rtl/run.sh
 ```
 
-This runs both RTL configurations and writes ADD/MUL waveforms for each. To run
+This runs all three RTL configurations and writes ADD/MUL waveforms for each. To run
 all regressions from a fresh build directory:
 
 ```sh

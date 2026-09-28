@@ -37,7 +37,9 @@ public:
     sc_core::sc_signal<bool> fault{"fault"};
     sc_core::sc_signal<sc_dt::sc_uint<2>> fault_code{"fault_code"};
 
-    Rv32imCpu cpu{"cpu", RV32IM_ISSUE_WIDTH};
+    Rv32imCpu cpu{"cpu", RV32IM_ISSUE_WIDTH,
+                  RV32IM_OUT_OF_ORDER ? Rv32imCpu::SchedulingMode::OutOfOrder :
+                                       Rv32imCpu::SchedulingMode::InOrder};
     InstructionMemory memory{"memory"};
     DualRetirementScoreboard scoreboard{"scoreboard"};
 

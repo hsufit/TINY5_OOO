@@ -30,7 +30,7 @@ struct Decoded {
 };
 struct Meta {
     std::uint32_t pc{};
-    unsigned rd{}, tag{};
+    unsigned rd{}, tag{}, pdst{}, old_pdst{};
 };
 struct Operand {
     bool ready{};
@@ -162,11 +162,20 @@ Result execute(const Execute& e) {
 
 }  // namespace
 
-// Models core_pipeline with ISSUE_WIDTH=1 or 2 and OUT_OF_ORDER=0.
+// Models core_pipeline with ISSUE_WIDTH=1 or 2 and both scheduling modes.
 struct Rv32imCpu::Pipeline {
-    static constexpr unsigned kIqDepth = 8, kRobDepth = 16;
-    explicit Pipeline(unsigned width) : issue_width(width) {}
+    static constexpr unsigned kIqDepth = 8, kRobDepth = 16, kPhysRegs = 64;
+    explicit Pipeline(unsigned width, SchedulingMode scheduling) : issue_width(width), mode(scheduling) {
+        if (mode == SchedulingMode::OutOfOrder) {
+            for (unsigned r = 0; r < 32; ++r) speculative_map[r] = committed_map[r] = r;
+            for (unsigned r = 0; r < kPhysRegs; ++r) {
+                free_register[r] = r >= 32;
+                ready_register[r] = true;
+            }
+        }
+    }
     unsigned issue_width;
+    SchedulingMode mode;
     bool req_valid{}, outstanding{}, fetch_local_stopped{}, fetch_stopped{}, terminal_enqueued{};
     std::uint32_t req_addr{}, fetch_pc{}, pending_pc{};
     Slot<Fetch> fetched{};
@@ -175,9 +184,11 @@ struct Rv32imCpu::Pipeline {
     std::array<Issue, kIqDepth> iq{};
     std::array<Completion, kRobDepth> rob{};
     unsigned head{}, tail{}, count{};
-    std::array<std::uint32_t, 32> registers{};
+    std::array<std::uint32_t, kPhysRegs> registers{};
     std::array<bool, 32> busy{};
     std::array<unsigned, 32> producer{};
+    std::array<unsigned, 32> speculative_map{}, committed_map{};
+    std::array<bool, kPhysRegs> free_register{}, ready_register{};
     std::array<Slot<Execute>, 2> issue2ex{};
     std::array<Slot<Result>, 2> alu{};
     Slot<Result> md_output{};
@@ -209,6 +220,62 @@ struct Rv32imCpu::Pipeline {
         return {entry.valid && entry.done, reg, entry.result.value};
     }
 
+    void prepare_ooo_dispatch(Controls& c, unsigned offer_count) const {
+        auto candidate_map = speculative_map;
+        auto candidate_ready = ready_register;
+        std::array<unsigned, 2> available{};
+        unsigned free_count = 0;
+        for (unsigned r = 1; r < kPhysRegs && free_count < 2; ++r)
+            if (free_register[r]) available[free_count++] = r;
+        unsigned used = 0;
+        for (unsigned p = 0; p < offer_count; ++p) {
+            const auto& d = id2dispatch[p];
+            auto& prepared = c.prepared[p];
+            prepared.valid = true;
+            prepared.op = d.op;
+            prepared.meta = {d.pc, d.rd, (tail + p) % kRobDepth, 0, 0};
+            const unsigned a = candidate_map[d.rs1], b = candidate_map[d.rs2];
+            prepared.a = {candidate_ready[a], a, registers[a]};
+            prepared.b = d.immediate_b ? Operand{true, 0, d.immediate} :
+                                         Operand{candidate_ready[b], b, registers[b]};
+            if (d.terminal) {
+                ++c.dispatch_count;
+                c.terminal_dispatch = true;
+                break;
+            }
+            if (d.rd != 0U && used == free_count) break;
+            ++c.dispatch_count;
+            if (d.rd != 0U) {
+                prepared.meta.old_pdst = candidate_map[d.rd];
+                prepared.meta.pdst = available[used];
+                candidate_map[d.rd] = available[used];
+                candidate_ready[available[used]] = false;
+                ++used;
+            }
+        }
+    }
+
+    void select_ooo_issue(Controls& c, bool md_issue_available) const {
+        bool md_used = false;
+        for (unsigned p = 0; p < issue_width; ++p) {
+            const bool stage_ready = !issue2ex[p].valid || c.ex_ready[p];
+            if (!stage_ready || c.finish || halted || fault) continue;
+            unsigned best_age = kRobDepth;
+            for (unsigned i = 0; i < kIqDepth; ++i) {
+                const auto& entry = iq[i];
+                const unsigned age = (entry.meta.tag + kRobDepth - head) % kRobDepth;
+                if (entry.valid && i != static_cast<unsigned>(c.issue_index[0]) &&
+                    entry.a.ready && entry.b.ready &&
+                    (!muldiv(entry.op) || (md_issue_available && !md_used)) && age < best_age) {
+                    best_age = age;
+                    c.issue_index[p] = static_cast<int>(i);
+                }
+            }
+            if (c.issue_index[p] >= 0 && muldiv(iq[static_cast<unsigned>(c.issue_index[p])].op))
+                md_used = true;
+        }
+    }
+
     Controls controls(bool reset) const {
         Controls c;
         c.stop = fetch_stopped;
@@ -232,25 +299,28 @@ struct Rv32imCpu::Pipeline {
         unsigned offer_count = std::min({static_cast<unsigned>(id2dispatch.size()), issue_width,
                                          kRobDepth - count, iq_space});
         if (reset || terminal_enqueued || halted || fault) offer_count = 0;
-        auto candidate_busy = busy;
-        for (unsigned p = 0; p < offer_count; ++p) {
-            const auto& d = id2dispatch[p];
-            c.prepared[p] = {true, {d.pc, d.rd, (tail + p) % kRobDepth}, d.op,
-                             operand(d.rs1), operand(d.rs2)};
-            if (d.terminal) {
+        if (mode == SchedulingMode::OutOfOrder) prepare_ooo_dispatch(c, offer_count);
+        else {
+            auto candidate_busy = busy;
+            for (unsigned p = 0; p < offer_count; ++p) {
+                const auto& d = id2dispatch[p];
+                c.prepared[p] = {true, {d.pc, d.rd, (tail + p) % kRobDepth, d.rd, 0}, d.op,
+                                 operand(d.rs1), operand(d.rs2)};
+                if (d.terminal) {
+                    ++c.dispatch_count;
+                    c.terminal_dispatch = true;
+                    break;
+                }
+                if (d.rd != 0U && candidate_busy[d.rd]) break;
+                if (p == 1U && !id2dispatch[0].terminal && id2dispatch[0].rd != 0U) {
+                    const unsigned older_rd = id2dispatch[0].rd;
+                    if (d.rs1 == older_rd) c.prepared[p].a = {false, d.rs1, 0};
+                    if (!d.immediate_b && d.rs2 == older_rd) c.prepared[p].b = {false, d.rs2, 0};
+                }
+                if (d.immediate_b) c.prepared[p].b = {true, 0, d.immediate};
                 ++c.dispatch_count;
-                c.terminal_dispatch = true;
-                break;
+                if (d.rd != 0U) candidate_busy[d.rd] = true;
             }
-            if (d.rd != 0U && candidate_busy[d.rd]) break;
-            if (p == 1U && !id2dispatch[0].terminal && id2dispatch[0].rd != 0U) {
-                const unsigned older_rd = id2dispatch[0].rd;
-                if (d.rs1 == older_rd) c.prepared[p].a = {false, d.rs1, 0};
-                if (!d.immediate_b && d.rs2 == older_rd) c.prepared[p].b = {false, d.rs2, 0};
-            }
-            if (d.immediate_b) c.prepared[p].b = {true, 0, d.immediate};
-            ++c.dispatch_count;
-            if (d.rd != 0U) candidate_busy[d.rd] = true;
         }
         for (unsigned p = 0; p < 2; ++p)
             c.wb_valid[p] = ex2wb[p].valid && !c.finish && !halted && !fault;
@@ -296,24 +366,28 @@ struct Rv32imCpu::Pipeline {
         const bool md_issue_available = c.md_ready &&
             !(issue2ex[0].valid && muldiv(issue2ex[0].data.op)) &&
             !(issue2ex[1].valid && muldiv(issue2ex[1].data.op));
-        for (unsigned p = 0; p < issue_width; ++p) {
-            unsigned best_age = kRobDepth;
-            int oldest = -1;
-            for (unsigned i = 0; i < kIqDepth; ++i) {
-                const unsigned age = (iq[i].meta.tag + kRobDepth - head) % kRobDepth;
-                if (iq[i].valid && i != static_cast<unsigned>(c.issue_index[0]) && age < best_age) {
-                    best_age = age;
-                    oldest = static_cast<int>(i);
+        if (mode == SchedulingMode::OutOfOrder) {
+            if (!reset) select_ooo_issue(c, md_issue_available);
+        } else {
+            for (unsigned p = 0; p < issue_width; ++p) {
+                unsigned best_age = kRobDepth;
+                int oldest = -1;
+                for (unsigned i = 0; i < kIqDepth; ++i) {
+                    const unsigned age = (iq[i].meta.tag + kRobDepth - head) % kRobDepth;
+                    if (iq[i].valid && i != static_cast<unsigned>(c.issue_index[0]) && age < best_age) {
+                        best_age = age;
+                        oldest = static_cast<int>(i);
+                    }
                 }
-            }
-            const bool stage_ready = !issue2ex[p].valid || c.ex_ready[p];
-            if (!stage_ready || blocked || reset || c.finish || halted || fault || oldest < 0) continue;
-            const auto& entry = iq[static_cast<unsigned>(oldest)];
-            if (!entry.a.ready || !entry.b.ready ||
-                (muldiv(entry.op) && (!md_issue_available || md_used))) blocked = true;
-            else {
-                c.issue_index[p] = oldest;
-                if (muldiv(entry.op)) md_used = true;
+                const bool stage_ready = !issue2ex[p].valid || c.ex_ready[p];
+                if (!stage_ready || blocked || reset || c.finish || halted || fault || oldest < 0) continue;
+                const auto& entry = iq[static_cast<unsigned>(oldest)];
+                if (!entry.a.ready || !entry.b.ready ||
+                    (muldiv(entry.op) && (!md_issue_available || md_used))) blocked = true;
+                else {
+                    c.issue_index[p] = oldest;
+                    if (muldiv(entry.op)) md_used = true;
+                }
             }
         }
         return c;
@@ -367,8 +441,14 @@ struct Rv32imCpu::Pipeline {
                 const auto& result = rob[(head + p) % kRobDepth].result;
                 next.retired[p].data = result;
                 if (result.meta.rd != 0U) {
-                    next.registers[result.meta.rd] = result.value;
-                    next.busy[result.meta.rd] = false;
+                    if (mode == SchedulingMode::OutOfOrder) {
+                        assert(result.meta.old_pdst != 0U && !free_register[result.meta.old_pdst]);
+                        next.free_register[result.meta.old_pdst] = true;
+                        next.committed_map[result.meta.rd] = result.meta.pdst;
+                    } else {
+                        next.registers[result.meta.rd] = result.value;
+                        next.busy[result.meta.rd] = false;
+                    }
                 }
             }
         }
@@ -396,6 +476,10 @@ struct Rv32imCpu::Pipeline {
                     assert(rob[result.meta.tag].valid && !rob[result.meta.tag].done);
                     next.rob[result.meta.tag].done = true;
                     next.rob[result.meta.tag].result.value = result.value;
+                    if (mode == SchedulingMode::OutOfOrder && result.meta.rd != 0U) {
+                        next.registers[result.meta.pdst] = result.value;
+                        next.ready_register[result.meta.pdst] = true;
+                    }
                 }
             }
             for (unsigned p = 0; p < c.retire_count; ++p) {
@@ -409,8 +493,16 @@ struct Rv32imCpu::Pipeline {
                 next.rob[(tail + p) % kRobDepth] =
                     {true, d.terminal, d.terminal, d.fault, {c.prepared[p].meta, 0}};
                 if (!d.terminal && d.rd != 0U) {
-                    next.busy[d.rd] = true;
-                    next.producer[d.rd] = (tail + p) % kRobDepth;
+                    if (mode == SchedulingMode::OutOfOrder) {
+                        const unsigned pdst = c.prepared[p].meta.pdst;
+                        assert(pdst != 0U && free_register[pdst]);
+                        next.free_register[pdst] = false;
+                        next.ready_register[pdst] = false;
+                        next.speculative_map[d.rd] = pdst;
+                    } else {
+                        next.busy[d.rd] = true;
+                        next.producer[d.rd] = (tail + p) % kRobDepth;
+                    }
                 }
             }
 
@@ -428,8 +520,9 @@ struct Rv32imCpu::Pipeline {
                 for (unsigned p = 0; p < 2; ++p) {
                     const auto& result = ex2wb[p].data;
                     if (!entry.valid || !c.wb_valid[p] || result.meta.rd == 0U) continue;
+                    const unsigned tag = mode == SchedulingMode::OutOfOrder ? result.meta.pdst : result.meta.rd;
                     for (auto* source : {&entry.a, &entry.b}) {
-                        if (!source->ready && source->reg == result.meta.rd) {
+                        if (!source->ready && source->reg == tag) {
                             source->ready = true;
                             source->value = result.value;
                         }
@@ -485,9 +578,12 @@ struct Rv32imCpu::Pipeline {
     }
 };
 
-Rv32imCpu::Rv32imCpu(sc_core::sc_module_name name, unsigned issue_width)
-    : sc_core::sc_module(name), issue_width_(issue_width), pipeline_(std::make_unique<Pipeline>(issue_width)) {
+Rv32imCpu::Rv32imCpu(sc_core::sc_module_name name, unsigned issue_width, SchedulingMode mode)
+    : sc_core::sc_module(name), issue_width_(issue_width), mode_(mode),
+      pipeline_(std::make_unique<Pipeline>(issue_width, mode)) {
     if (issue_width != 1U && issue_width != 2U) throw std::invalid_argument("issue_width must be 1 or 2");
+    if (mode == SchedulingMode::OutOfOrder && issue_width != 2U)
+        throw std::invalid_argument("out-of-order mode requires issue_width 2");
     SC_METHOD(tick);
     sensitive << clk.pos();
     dont_initialize();
@@ -497,7 +593,7 @@ Rv32imCpu::Rv32imCpu(sc_core::sc_module_name name, unsigned issue_width)
 Rv32imCpu::~Rv32imCpu() = default;
 
 void Rv32imCpu::tick() {
-    if (reset.read()) *pipeline_ = Pipeline{issue_width_};
+    if (reset.read()) *pipeline_ = Pipeline{issue_width_, mode_};
     else {
         const auto controls = pipeline_->controls(false);
         pipeline_->advance(controls, imem_req_ready.read(), imem_rsp_valid.read(),

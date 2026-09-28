@@ -80,7 +80,9 @@ public:
     FetchSignals rtl_fetch{"rtl_fetch"}, reference_fetch{"reference_fetch"}, systemc_fetch{"systemc_fetch"};
     RetireSignals rtl_retire{"rtl_retire"}, reference_retire{"reference_retire"}, systemc_retire{"systemc_retire"};
     RtlCpuAdapter<RTL_MODEL_CLASS> cpu{"cpu"};
-    Rv32imCpu systemc_cpu{"systemc_cpu", RTL_MODE == 1 ? 2U : 1U};
+    Rv32imCpu systemc_cpu{"systemc_cpu", RTL_MODE == 0 ? 1U : 2U,
+                          RTL_MODE == 2 ? Rv32imCpu::SchedulingMode::OutOfOrder :
+                                          Rv32imCpu::SchedulingMode::InOrder};
     Rv32imReferenceCpu reference{"reference"};
     InstructionMemory memory{"memory"}, reference_memory{"reference_memory"}, systemc_memory{"systemc_memory"};
     DualRetirementScoreboard scoreboard{"scoreboard"}, reference_scoreboard{"reference_scoreboard"},
@@ -264,7 +266,8 @@ private:
         const auto& systemc = systemc_scoreboard.state;
         if (systemc.protocol_error() || systemc.events() != expected.events())
             fail("SystemC retirement trace differs from interpreter");
-        if (rtl_cycles_.cycles() != systemc_cycles_.cycles()) fail("elapsed cycle counts differ");
+        if (rtl_cycles_.cycles() != systemc_cycles_.cycles())
+            fail("elapsed cycle counts differ");
         // Normal/stalled memories alone space requests 5/9 cycles apart.
         if (require_fetch_throttle && max_request_gap_ <= 9U)
             fail("full frontend did not throttle fetch requests");

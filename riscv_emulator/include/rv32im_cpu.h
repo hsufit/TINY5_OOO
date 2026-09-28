@@ -10,6 +10,7 @@
 class Rv32imCpu : public sc_core::sc_module {
 public:
     static constexpr std::size_t kRegisterCount = 32;
+    enum class SchedulingMode { InOrder, OutOfOrder };
 
     sc_core::sc_in<bool> clk{"clk"};
     sc_core::sc_in<bool> reset{"reset"};
@@ -37,7 +38,8 @@ public:
     sc_core::sc_out<sc_dt::sc_uint<2>> fault_code{"fault_code"};
 
     SC_HAS_PROCESS(Rv32imCpu);
-    explicit Rv32imCpu(sc_core::sc_module_name name, unsigned issue_width = 1);
+    explicit Rv32imCpu(sc_core::sc_module_name name, unsigned issue_width = 1,
+                       SchedulingMode mode = SchedulingMode::InOrder);
     ~Rv32imCpu() override;
 
 private:
@@ -45,6 +47,7 @@ private:
     void tick();
     void drive_outputs();
     const unsigned issue_width_;
+    const SchedulingMode mode_;
     std::unique_ptr<Pipeline> pipeline_;
     sc_core::sc_event state_changed_;
 };

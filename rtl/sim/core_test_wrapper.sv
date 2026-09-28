@@ -1,5 +1,6 @@
 module core_test_wrapper #(
-  parameter bit DUAL_INORDER = 0
+  parameter bit DUAL_INORDER = 0,
+  parameter bit DUAL_OOO = 0
 ) (
   input logic clk, reset,
   output logic imem_req_valid,
@@ -18,7 +19,18 @@ module core_test_wrapper #(
   output logic [1:0] debug_rob_capacity, debug_iq_capacity,
   output logic [31:0] debug_issue_pc0, debug_issue_pc1, debug_complete_pc0, debug_complete_pc1
 );
-  if (DUAL_INORDER) begin : dual
+  if (DUAL_OOO) begin : ooo
+    tiny5_dual_ooo dut (.*);
+    assign debug_issue_valid = dut.core.issue_valid;
+    assign debug_issue_pc0 = dut.core.issue_data[0].meta.pc;
+    assign debug_issue_pc1 = dut.core.issue_data[1].meta.pc;
+    assign debug_complete_valid = dut.core.wb_valid;
+    assign debug_complete_pc0 = dut.core.wb_data[0].meta.pc;
+    assign debug_complete_pc1 = dut.core.wb_data[1].meta.pc;
+    assign debug_dispatch_count = dut.core.dispatch_count;
+    assign debug_rob_capacity = dut.core.rob_capacity;
+    assign debug_iq_capacity = dut.core.iq_capacity;
+  end else if (DUAL_INORDER) begin : dual
     tiny5_dual_inorder dut (.*);
     assign debug_issue_valid = dut.core.issue_valid;
     assign debug_issue_pc0 = dut.core.issue_data[0].meta.pc;

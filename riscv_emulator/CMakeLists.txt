@@ -31,7 +31,7 @@ target_link_libraries(rv32im_test_support PUBLIC SystemC::systemc)
 target_compile_options(rv32im_test_support PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_executable(rv32im_tests tests/rv32im_tests.cpp)
-target_compile_definitions(rv32im_tests PRIVATE RV32IM_ISSUE_WIDTH=1)
+target_compile_definitions(rv32im_tests PRIVATE RV32IM_ISSUE_WIDTH=1 RV32IM_OUT_OF_ORDER=0)
 target_link_libraries(rv32im_tests PRIVATE
     rv32im_cpu
     instruction_memory
@@ -39,12 +39,20 @@ target_link_libraries(rv32im_tests PRIVATE
 target_compile_options(rv32im_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_executable(rv32im_dual_tests tests/rv32im_tests.cpp)
-target_compile_definitions(rv32im_dual_tests PRIVATE RV32IM_ISSUE_WIDTH=2)
+target_compile_definitions(rv32im_dual_tests PRIVATE RV32IM_ISSUE_WIDTH=2 RV32IM_OUT_OF_ORDER=0)
 target_link_libraries(rv32im_dual_tests PRIVATE
     rv32im_cpu
     instruction_memory
     rv32im_test_support)
 target_compile_options(rv32im_dual_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_executable(rv32im_ooo_tests tests/rv32im_tests.cpp)
+target_compile_definitions(rv32im_ooo_tests PRIVATE RV32IM_ISSUE_WIDTH=2 RV32IM_OUT_OF_ORDER=1)
+target_link_libraries(rv32im_ooo_tests PRIVATE
+    rv32im_cpu
+    instruction_memory
+    rv32im_test_support)
+target_compile_options(rv32im_ooo_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_executable(instruction_memory_tests tests/instruction_memory_tests.cpp)
 target_link_libraries(instruction_memory_tests PRIVATE instruction_memory)
@@ -58,6 +66,10 @@ if(BUILD_TESTING)
         TIMEOUT 10)
     add_test(NAME rv32im_dual_arithmetic COMMAND rv32im_dual_tests)
     set_tests_properties(rv32im_dual_arithmetic PROPERTIES
+        PASS_REGULAR_EXPRESSION "All RV32IM arithmetic tests passed"
+        TIMEOUT 10)
+    add_test(NAME rv32im_ooo_arithmetic COMMAND rv32im_ooo_tests)
+    set_tests_properties(rv32im_ooo_arithmetic PROPERTIES
         PASS_REGULAR_EXPRESSION "All RV32IM arithmetic tests passed"
         TIMEOUT 10)
     add_test(NAME instruction_memory_protocol COMMAND instruction_memory_tests)
