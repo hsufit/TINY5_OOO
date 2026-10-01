@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -43,7 +44,9 @@ public:
     DualRetirementScoreboard scoreboard{"scoreboard"};
 
     SC_HAS_PROCESS(AddMulWaveformTestbench);
-    explicit AddMulWaveformTestbench(sc_core::sc_module_name name) : sc_module(name) {
+    AddMulWaveformTestbench(sc_core::sc_module_name name, const ProgramTest& program,
+                            std::vector<RetirementEvent> expected)
+        : sc_module(name), program_(program), expected_(std::move(expected)) {
         cpu.clk(clock);
         cpu.reset(reset);
         cpu.imem_req_valid(req_valid);
@@ -107,18 +110,13 @@ private:
     }
 
     void fail(const std::string& reason) {
-        std::cerr << "[FAIL] ADD/MUL waveform test: " << reason << '\n';
+        std::cerr << "[FAIL] " << program_.name << " waveform test: " << reason << '\n';
         ++failures_;
     }
 
     void run() {
-        const auto& program = rv32im_add_mul_test().program;
-        const std::vector<RetirementEvent> expected{
-            {0, 1, 6}, {4, 2, 7}, {8, 3, 13}, {12, 4, 42}, {16, 5, 55},
-        };
-
         reset.write(true);
-        memory.load_program(program);
+        memory.load_program(program_.program);
         wait(clock.posedge_event());
         wait(clock.negedge_event());
         reset.write(false);
@@ -135,25 +133,39 @@ private:
         if (RTL_MODE == 0 && lane1_retired_)
             fail("retirement lane 1 was used by a single-issue core");
         if (scoreboard.state.protocol_error()) fail("invalid retirement protocol");
-        if (scoreboard.state.events() != expected) fail("retirement trace or result values differ");
+        if (scoreboard.state.events() != expected_) fail("retirement trace or result values differ");
 
         if (failures_ == 0)
-            std::cout << "[PASS] ADD/MUL waveform test: x3=13, x4=42, x5=55"
-                      << " cycles=" << cycles.cycles() << " retired=5\n";
+            std::cout << "[PASS] " << program_.name << " waveform test"
+                      << " cycles=" << cycles.cycles() << " retired=" << expected_.size() << '\n';
         sc_core::sc_stop();
     }
 
     unsigned failures_{0};
     bool lane1_retired_{false};
+    const ProgramTest& program_;
+    const std::vector<RetirementEvent> expected_;
 };
 }  // namespace
 
 int sc_main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
     Verilated::traceEverOn(true);
+    if (argc > 3 || (argc == 3 && std::string(argv[2]) != "queued_alu")) {
+        std::cerr << "Usage: " << argv[0] << " [waveform.fst [queued_alu]]\n";
+        return 2;
+    }
     const std::string waveform = argc > 1 ? argv[1] : "add_mul.fst";
+    const bool queued_alu = argc == 3;
+    const ProgramTest& program = queued_alu ? rv32im_queued_alu_behind_multiply_test()
+                                            : rv32im_add_mul_test();
+    const std::vector<RetirementEvent> expected = queued_alu
+        ? std::vector<RetirementEvent>{{0, 1, 6}, {4, 2, 7}, {8, 3, 42}, {12, 4, 42},
+                                       {16, 5, 1}, {20, 6, 2}, {24, 7, 3}, {28, 8, 4}}
+        : std::vector<RetirementEvent>{{0, 1, 6}, {4, 2, 7}, {8, 3, 13},
+                                       {12, 4, 42}, {16, 5, 55}};
 
-    AddMulWaveformTestbench testbench{"testbench"};
+    AddMulWaveformTestbench testbench{"testbench", program, expected};
     sc_core::sc_start(sc_core::SC_ZERO_TIME);
 
     VerilatedFstSc trace;

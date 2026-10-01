@@ -343,6 +343,8 @@ private:
         differential("empty program", {});
         differential("independent integer work during divide", bytes({
             reg(1, 4, 1, 0, 0), imm(0, 2, 0, 7), reg(0, 0, 3, 2, 2)}), true);
+        differential("queued ALU work behind multiply",
+                     rv32im_queued_alu_behind_multiply_test().program);
         std::vector<std::uint32_t> pressure{reg(1, 4, 1, 0, 0), imm(0, 2, 1, 7)};
         for (unsigned rd = 3; rd < 31; ++rd) pressure.push_back(imm(0, rd, 0, rd));
         pressure.push_back(reg(1, 4, 1, 2, 3));

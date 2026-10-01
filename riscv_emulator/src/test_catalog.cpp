@@ -52,6 +52,24 @@ const ProgramTest& rv32im_add_mul_test() {
     return test;
 }
 
+const ProgramTest& rv32im_queued_alu_behind_multiply_test() {
+    static const ProgramTest test = success(
+        "queued ALU work behind multiply",
+        {
+            0x93, 0x00, 0x60, 0x00,  // addi x1,x0,6
+            0x13, 0x01, 0x70, 0x00,  // addi x2,x0,7
+            0xb3, 0x81, 0x20, 0x02,  // mul  x3,x1,x2
+            0x33, 0x82, 0x01, 0x00,  // add  x4,x3,x0
+            0x93, 0x02, 0x10, 0x00,  // addi x5,x0,1
+            0x13, 0x03, 0x20, 0x00,  // addi x6,x0,2
+            0x93, 0x03, 0x30, 0x00,  // addi x7,x0,3
+            0x13, 0x04, 0x40, 0x00,  // addi x8,x0,4
+        },
+        {{1, 6U}, {2, 7U}, {3, 42U}, {4, 42U},
+         {5, 1U}, {6, 2U}, {7, 3U}, {8, 4U}});
+    return test;
+}
+
 const std::vector<ProgramTest>& rv32im_test_catalog() {
     static const std::vector<ProgramTest> tests{
         rv32im_add_mul_test(),

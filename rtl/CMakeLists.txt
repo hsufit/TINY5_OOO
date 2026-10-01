@@ -109,4 +109,13 @@ if(BUILD_TESTING)
     add_test(NAME rtl_dual_ooo_add_mul_waveform COMMAND ${OOO_WAVEFORM_TARGET}
         "${CMAKE_CURRENT_BINARY_DIR}/add_mul_dual_ooo.fst")
     set_tests_properties(rtl_dual_ooo_add_mul_waveform PROPERTIES TIMEOUT 30)
+    add_test(NAME rtl_queued_alu_waveform COMMAND ${WAVEFORM_TARGET}
+        "${CMAKE_CURRENT_BINARY_DIR}/queued_alu.fst" queued_alu)
+    set_tests_properties(rtl_queued_alu_waveform PROPERTIES TIMEOUT 30)
+    add_test(NAME rtl_dual_queued_alu_waveform COMMAND ${DUAL_WAVEFORM_TARGET}
+        "${CMAKE_CURRENT_BINARY_DIR}/queued_alu_dual.fst" queued_alu)
+    set_tests_properties(rtl_dual_queued_alu_waveform PROPERTIES TIMEOUT 30)
+    add_test(NAME rtl_dual_ooo_queued_alu_waveform COMMAND ${OOO_WAVEFORM_TARGET}
+        "${CMAKE_CURRENT_BINARY_DIR}/queued_alu_dual_ooo.fst" queued_alu)
+    set_tests_properties(rtl_dual_ooo_queued_alu_waveform PROPERTIES TIMEOUT 30)
 endif()
