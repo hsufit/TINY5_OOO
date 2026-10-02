@@ -117,9 +117,10 @@ For RTL tests, with Verilator installed:
 ./rtl/run.sh
 ```
 
-This runs all three RTL configurations and writes ADD/MUL and queued-ALU-behind-multiply
-waveforms for each (`add_mul*.fst` and `queued_alu*.fst` in the build directory's
-`rtl/` subdirectory). To run all regressions from a fresh build directory:
+This runs all three RTL configurations and writes ADD/MUL, queued-ALU, and
+queued-ALU-chain waveforms for each (`add_mul*.fst`, `queued_alu*.fst`, and
+`queued_alu_chain*.fst` in the build directory's `rtl/` subdirectory). To run all
+regressions from a fresh build directory:
 
 ```sh
 cmake -S . -B /tmp/tiny5-build -DBUILD_TESTING=ON -DTINY5_BUILD_RTL=ON
