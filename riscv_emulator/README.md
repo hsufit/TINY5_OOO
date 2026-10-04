@@ -117,9 +117,10 @@ For RTL tests, with Verilator installed:
 ./rtl/run.sh
 ```
 
-This runs all three RTL configurations and writes ADD/MUL, queued-ALU, and
-queued-ALU-chain waveforms for each (`add_mul*.fst`, `queued_alu*.fst`, and
-`queued_alu_chain*.fst` in the build directory's `rtl/` subdirectory). To run all
+This runs all three RTL configurations and writes ADD/MUL, queued-ALU,
+queued-ALU-chain, and queued-ALU-hazards waveforms for each (`add_mul*.fst`,
+`queued_alu*.fst`, `queued_alu_chain*.fst`, and `queued_alu_hazards*.fst` in the
+build directory's `rtl/` subdirectory). To run all
 regressions from a fresh build directory:
 
 ```sh

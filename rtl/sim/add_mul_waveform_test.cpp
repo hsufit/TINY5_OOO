@@ -152,17 +152,24 @@ int sc_main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
     Verilated::traceEverOn(true);
     const std::string scenario = argc == 3 ? argv[2] : "";
-    if (argc > 3 || (!scenario.empty() && scenario != "queued_alu" && scenario != "queued_alu_chain")) {
-        std::cerr << "Usage: " << argv[0] << " [waveform.fst [queued_alu|queued_alu_chain]]\n";
+    if (argc > 3 || (!scenario.empty() && scenario != "queued_alu" &&
+                     scenario != "queued_alu_chain" && scenario != "queued_alu_hazards")) {
+        std::cerr << "Usage: " << argv[0]
+                  << " [waveform.fst [queued_alu|queued_alu_chain|queued_alu_hazards]]\n";
         return 2;
     }
     const std::string waveform = argc > 1 ? argv[1] : "add_mul.fst";
     const bool queued_alu = scenario == "queued_alu";
     const bool queued_alu_chain = scenario == "queued_alu_chain";
-    const ProgramTest& program = queued_alu_chain ? rv32im_queued_alu_chain_behind_multiply_test()
+    const bool queued_alu_hazards = scenario == "queued_alu_hazards";
+    const ProgramTest& program = queued_alu_hazards ? rv32im_queued_alu_hazards_test()
+                                : queued_alu_chain ? rv32im_queued_alu_chain_behind_multiply_test()
                                 : queued_alu ? rv32im_queued_alu_behind_multiply_test()
                                              : rv32im_add_mul_test();
-    const std::vector<RetirementEvent> expected = queued_alu_chain
+    const std::vector<RetirementEvent> expected = queued_alu_hazards
+        ? std::vector<RetirementEvent>{{0, 1, 6}, {4, 2, 7}, {8, 3, 42}, {12, 4, 42},
+                                       {16, 5, 43}, {20, 5, 9}, {24, 6, 9}, {28, 7, 1}}
+        : queued_alu_chain
         ? std::vector<RetirementEvent>{{0, 1, 6}, {4, 2, 7}, {8, 3, 42}, {12, 4, 42},
                                        {16, 5, 1}, {20, 6, 2}, {24, 7, 1}, {28, 8, 2}}
         : queued_alu

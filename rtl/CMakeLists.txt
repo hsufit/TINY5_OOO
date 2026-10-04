@@ -127,4 +127,13 @@ if(BUILD_TESTING)
     add_test(NAME rtl_dual_ooo_queued_alu_chain_waveform COMMAND ${OOO_WAVEFORM_TARGET}
         "${CMAKE_CURRENT_BINARY_DIR}/queued_alu_chain_dual_ooo.fst" queued_alu_chain)
     set_tests_properties(rtl_dual_ooo_queued_alu_chain_waveform PROPERTIES TIMEOUT 30)
+    add_test(NAME rtl_queued_alu_hazards_waveform COMMAND ${WAVEFORM_TARGET}
+        "${CMAKE_CURRENT_BINARY_DIR}/queued_alu_hazards.fst" queued_alu_hazards)
+    set_tests_properties(rtl_queued_alu_hazards_waveform PROPERTIES TIMEOUT 30)
+    add_test(NAME rtl_dual_queued_alu_hazards_waveform COMMAND ${DUAL_WAVEFORM_TARGET}
+        "${CMAKE_CURRENT_BINARY_DIR}/queued_alu_hazards_dual.fst" queued_alu_hazards)
+    set_tests_properties(rtl_dual_queued_alu_hazards_waveform PROPERTIES TIMEOUT 30)
+    add_test(NAME rtl_dual_ooo_queued_alu_hazards_waveform COMMAND ${OOO_WAVEFORM_TARGET}
+        "${CMAKE_CURRENT_BINARY_DIR}/queued_alu_hazards_dual_ooo.fst" queued_alu_hazards)
+    set_tests_properties(rtl_dual_ooo_queued_alu_hazards_waveform PROPERTIES TIMEOUT 30)
 endif()

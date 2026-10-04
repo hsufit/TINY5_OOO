@@ -29,5 +29,6 @@ const std::vector<ProgramTest>& rv32im_test_catalog();
 const ProgramTest& rv32im_add_mul_test();
 const ProgramTest& rv32im_queued_alu_behind_multiply_test();
 const ProgramTest& rv32im_queued_alu_chain_behind_multiply_test();
+const ProgramTest& rv32im_queued_alu_hazards_test();
 
 #endif

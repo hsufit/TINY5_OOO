@@ -198,6 +198,7 @@ private:
         rtl_cycles_.reset(); systemc_cycles_.reset();
         elapsed_cycles_ = 0;
         cycle_mismatch_ = false;
+        paired_retire_12_16_seen_ = false;
         reset.write(true);
         reserved_status.write(reserved);
         memory.set_timing(timing); reference_memory.set_timing(timing);
@@ -248,10 +249,14 @@ private:
         ++elapsed_cycles_;
         rtl_cycles_.sample(stopped(rtl_retire));
         systemc_cycles_.sample(stopped(systemc_retire));
+        if (rtl_retire.valid[0].read() && rtl_retire.valid[1].read() &&
+            rtl_retire.pc[0].read().to_uint() == 12U && rtl_retire.pc[1].read().to_uint() == 16U)
+            paired_retire_12_16_seen_ = true;
         compare_cycle_outputs();
     }
     void check(const std::vector<std::uint8_t>& program, const ProgramTest* catalog = nullptr,
-               bool require_overlap = false, bool require_fetch_throttle = false) {
+               bool require_overlap = false, bool require_fetch_throttle = false,
+               bool require_paired_retirement = false) {
         const unsigned before = failures_;
         const unsigned timeout = 2000U + 128U * static_cast<unsigned>(program.size() / 4U);
         unsigned cycle = 0;
@@ -268,6 +273,8 @@ private:
             fail("SystemC retirement trace differs from interpreter");
         if (rtl_cycles_.cycles() != systemc_cycles_.cycles())
             fail("elapsed cycle counts differ");
+        if (require_paired_retirement && RTL_MODE != 0 && !paired_retire_12_16_seen_)
+            fail("PCs 12 and 16 did not retire together");
         // Normal/stalled memories alone space requests 5/9 cycles apart.
         if (require_fetch_throttle && max_request_gap_ <= 9U)
             fail("full frontend did not throttle fetch requests");
@@ -325,11 +332,13 @@ private:
             << " retired=" << actual.retirement_count() << '\n';
     }
     void differential(const std::string& name, const std::vector<std::uint8_t>& program,
-                      bool require_overlap = false, bool require_fetch_throttle = false) {
+                      bool require_overlap = false, bool require_fetch_throttle = false,
+                      bool require_paired_retirement = false) {
         for (unsigned mode = 0; mode < 2; ++mode) {
             active_name_ = name + (mode == 0 ? " [normal]" : " [stalled]");
             start(program, mode == 0 ? InstructionMemory::normal_timing() : InstructionMemory::stalled_timing());
-            check(program, nullptr, require_overlap, require_fetch_throttle);
+            check(program, nullptr, require_overlap, require_fetch_throttle,
+                  require_paired_retirement && mode == 0);
         }
     }
     void run() {
@@ -347,6 +356,8 @@ private:
                      rv32im_queued_alu_behind_multiply_test().program);
         differential("queued ALU chain behind multiply",
                      rv32im_queued_alu_chain_behind_multiply_test().program);
+        differential("queued ALU register hazards", rv32im_queued_alu_hazards_test().program,
+                     false, false, true);
         std::vector<std::uint32_t> pressure{reg(1, 4, 1, 0, 0), imm(0, 2, 1, 7)};
         for (unsigned rd = 3; rd < 31; ++rd) pressure.push_back(imm(0, rd, 0, rd));
         pressure.push_back(reg(1, 4, 1, 2, 3));
@@ -440,6 +451,7 @@ private:
     ProgramCycleCounter rtl_cycles_, systemc_cycles_;
     std::uint64_t elapsed_cycles_{};
     bool cycle_mismatch_{};
+    bool paired_retire_12_16_seen_{};
     std::vector<std::uint32_t> issued_, completed_;
     unsigned failures_{0}, programs_{0}, dual_issue_cycles_{0}, dual_retire_cycles_{0};
     unsigned dual_dispatch_cycles_{0}, reordered_programs_{0}, full_iq_cycles_{0}, full_rob_cycles_{0};

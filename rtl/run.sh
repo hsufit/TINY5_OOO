@@ -34,8 +34,9 @@ cmake --build "$build_dir" \
     --target rtl_single_inorder_tests rtl_dual_inorder_tests rtl_dual_ooo_tests \
         rtl_add_mul_waveform rtl_dual_add_mul_waveform rtl_dual_ooo_add_mul_waveform --parallel 2
 ctest --test-dir "$build_dir" --verbose \
-    -R '^(rtl_single_inorder|rtl_dual_inorder|rtl_dual_ooo|rtl_add_mul_waveform|rtl_dual_add_mul_waveform|rtl_dual_ooo_add_mul_waveform|rtl_queued_alu_waveform|rtl_dual_queued_alu_waveform|rtl_dual_ooo_queued_alu_waveform|rtl_queued_alu_chain_waveform|rtl_dual_queued_alu_chain_waveform|rtl_dual_ooo_queued_alu_chain_waveform)$' \
+    -R '^(rtl_single_inorder|rtl_dual_inorder|rtl_dual_ooo|rtl_add_mul_waveform|rtl_dual_add_mul_waveform|rtl_dual_ooo_add_mul_waveform|rtl_queued_alu_waveform|rtl_dual_queued_alu_waveform|rtl_dual_ooo_queued_alu_waveform|rtl_queued_alu_chain_waveform|rtl_dual_queued_alu_chain_waveform|rtl_dual_ooo_queued_alu_chain_waveform|rtl_queued_alu_hazards_waveform|rtl_dual_queued_alu_hazards_waveform|rtl_dual_ooo_queued_alu_hazards_waveform)$' \
     --output-on-failure
 printf 'Waveforms: %s %s %s\n' "$build_dir/rtl/add_mul.fst" "$build_dir/rtl/add_mul_dual.fst" "$build_dir/rtl/add_mul_dual_ooo.fst"
 printf '           %s %s %s\n' "$build_dir/rtl/queued_alu.fst" "$build_dir/rtl/queued_alu_dual.fst" "$build_dir/rtl/queued_alu_dual_ooo.fst"
 printf '           %s %s %s\n' "$build_dir/rtl/queued_alu_chain.fst" "$build_dir/rtl/queued_alu_chain_dual.fst" "$build_dir/rtl/queued_alu_chain_dual_ooo.fst"
+printf '           %s %s %s\n' "$build_dir/rtl/queued_alu_hazards.fst" "$build_dir/rtl/queued_alu_hazards_dual.fst" "$build_dir/rtl/queued_alu_hazards_dual_ooo.fst"
