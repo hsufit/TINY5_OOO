@@ -2,6 +2,8 @@
 /systemc_hello/build*/
 /riscv_emulator/build*/
 /rtl/build*/
+/build*/
+/cmake-build*/
 **/CMakeFiles/
 **/CMakeCache.txt
 **/cmake_install.cmake
@@ -10,3 +12,15 @@
 **/compile_commands.json
 **/Testing/
 **/_deps/
+
+# Verilator output and simulation waveforms
+obj_dir/
+*.vcd
+*.fst
+
+# Editor temporary files and OS metadata
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
