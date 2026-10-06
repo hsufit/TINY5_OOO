@@ -1,5 +1,6 @@
 module free_list #(parameter int REG_COUNT = tiny5_pkg::PHYS_REGS) (
-  input logic clk, reset,
+  input logic clk, reset, restore,
+  input logic [REG_COUNT-1:0] restore_free,
   input logic [1:0] allocate_count,
   output logic [1:0] available,
   output tiny5_pkg::phys_t allocate_register [2],
@@ -23,6 +24,8 @@ module free_list #(parameter int REG_COUNT = tiny5_pkg::PHYS_REGS) (
   always_ff @(posedge clk) begin
     if (reset) begin
       for (int r = 0; r < REG_COUNT; r++) free_q[r] <= r >= 32;
+    end else if (restore) begin
+      free_q <= restore_free;
     end else begin
       for (int p = 0; p < 2; p++) begin
         if (release_valid[p] && release_register[p] != 0) free_q[release_register[p]] <= 1;

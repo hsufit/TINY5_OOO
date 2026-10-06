@@ -10,3 +10,4 @@ ctest --test-dir "$build_dir" --output-on-failure
 "$build_dir/rv32im_tests"
 "$build_dir/rv32im_dual_tests"
 "$build_dir/rv32im_ooo_tests"
+"$build_dir/rv32im_ooo_retire_tests"

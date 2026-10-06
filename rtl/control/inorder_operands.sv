@@ -46,6 +46,7 @@ module inorder_operands (
       prepared[p] = '0;
       prepared[p].valid = 1;
       prepared[p].op = decoded[p].op;
+      prepared[p].branch_offset = decoded[p].immediate;
       prepared[p].meta = '{pc:decoded[p].pc, rd:decoded[p].rd,
                             pdst:{1'b0, decoded[p].rd}, old_pdst:6'b0, tag:allocate_tag[p]};
       prepared[p].a = selected_operands[2*p];

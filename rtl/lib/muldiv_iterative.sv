@@ -84,7 +84,7 @@ module muldiv_iterative (
         end else begin
           busy <= 0;
           out_valid <= 1;
-          out_data <= '{meta:request.meta, value:final_value};
+          out_data <= '{meta:request.meta, value:final_value, branch:'0};
         end
       end
     end

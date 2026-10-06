@@ -69,10 +69,25 @@ module rv32_decode (
           endcase
         end
       end
+      7'h63: begin
+        decoded.rd = 0;
+        decoded.immediate = {{19{fetched.instruction[31]}}, fetched.instruction[31],
+          fetched.instruction[7], fetched.instruction[30:25], fetched.instruction[11:8], 1'b0};
+        case (funct3)
+          0: decoded.op = OP_BEQ;
+          1: decoded.op = OP_BNE;
+          4: decoded.op = OP_BLT;
+          5: decoded.op = OP_BGE;
+          6: decoded.op = OP_BLTU;
+          7: decoded.op = OP_BGEU;
+          default: legal = 0;
+        endcase
+      end
       default: legal = 0;
     endcase
     if (fetched.status != IMEM_OK || !legal) begin
       decoded.terminal = 1;
+      decoded.op = OP_ADD;
       decoded.rd = 0;
       decoded.rs1 = 0;
       decoded.rs2 = 0;

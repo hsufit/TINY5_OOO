@@ -38,6 +38,11 @@ module completion_queue (
         if (complete_valid[p]) begin
           entries[complete_data[p].meta.tag].done <= 1;
           entries[complete_data[p].meta.tag].value <= complete_data[p].value;
+          entries[complete_data[p].meta.tag].branch <= complete_data[p].branch;
+          if (complete_data[p].branch.fault != FAULT_NONE) begin
+            entries[complete_data[p].meta.tag].terminal <= 1;
+            entries[complete_data[p].meta.tag].fault <= complete_data[p].branch.fault;
+          end
         end
         if (p < int'(retire_count)) entries[rob_tag_t'(head + rob_tag_t'(p))].valid <= 0;
         if (p < int'(allocate_count)) entries[allocate_tag[p]] <= allocate_data[p];

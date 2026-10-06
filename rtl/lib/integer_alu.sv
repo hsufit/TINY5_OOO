@@ -9,6 +9,7 @@ module integer_alu (
   import tiny5_pkg::*;
   result_t result;
   always_comb begin
+    result = '0;
     result.meta = in_data.meta;
     case (in_data.op)
       OP_ADD: result.value = in_data.a + in_data.b;
@@ -21,8 +22,20 @@ module integer_alu (
       OP_SRA: result.value = $signed(in_data.a) >>> in_data.b[4:0];
       OP_OR: result.value = in_data.a | in_data.b;
       OP_AND: result.value = in_data.a & in_data.b;
+      OP_BEQ: result.branch.taken = in_data.a == in_data.b;
+      OP_BNE: result.branch.taken = in_data.a != in_data.b;
+      OP_BLT: result.branch.taken = $signed(in_data.a) < $signed(in_data.b);
+      OP_BGE: result.branch.taken = $signed(in_data.a) >= $signed(in_data.b);
+      OP_BLTU: result.branch.taken = in_data.a < in_data.b;
+      OP_BGEU: result.branch.taken = in_data.a >= in_data.b;
       default: result.value = 0;
     endcase
+    if (is_branch(in_data.op)) begin
+      result.branch.valid = 1;
+      result.branch.target = in_data.meta.pc + in_data.branch_offset;
+      if (result.branch.taken && result.branch.target[1:0] != 0)
+        result.branch.fault = FAULT_MISALIGNED;
+    end
     if (in_data.meta.rd == 0) result.value = 0;
   end
   elastic_reg #(.WIDTH($bits(result_t))) storage (

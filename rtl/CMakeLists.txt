@@ -4,7 +4,7 @@ endif()
 find_package(verilator REQUIRED HINTS $ENV{VERILATOR_ROOT} ${VERILATOR_ROOT})
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/filelists/common.f" TINY5_RTL_SOURCES)
 list(TRANSFORM TINY5_RTL_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
-set(TINY5_TOP_SOURCES tops/tiny5_single_inorder.sv tops/tiny5_dual_inorder.sv tops/tiny5_dual_ooo.sv)
+set(TINY5_TOP_SOURCES tops/tiny5_single_inorder.sv tops/tiny5_dual_inorder.sv tops/tiny5_dual_ooo.sv tops/tiny5_dual_ooo_retire.sv)
 set(TINY5_LINT_ARGS -Wall -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM --assert)
 set_source_files_properties(sim/core_tests.cpp sim/add_mul_waveform_test.cpp PROPERTIES
     COMPILE_OPTIONS "-Wall;-Wextra;-Wpedantic;-Werror")
@@ -49,6 +49,20 @@ verilate(${OOO_TARGET} SYSTEMC PREFIX ${OOO_MODEL} TOP_MODULE core_test_wrapper
     SOURCES ${TINY5_RTL_SOURCES} ${TINY5_TOP_SOURCES} sim/core_test_wrapper.sv
     VERILATOR_ARGS ${TINY5_LINT_ARGS} -GDUAL_OOO=1)
 target_include_directories(${OOO_TARGET} SYSTEM PRIVATE
+    "${VERILATOR_ROOT}/include" "${VERILATOR_ROOT}/include/vltstd")
+
+set(RETIRE_TARGET rtl_dual_ooo_retire_tests)
+set(RETIRE_MODEL Vcore_dual_ooo_retire)
+add_executable(${RETIRE_TARGET} sim/core_tests.cpp)
+target_include_directories(${RETIRE_TARGET} PRIVATE sim)
+target_link_libraries(${RETIRE_TARGET} PRIVATE
+    rv32im_cpu rv32im_reference_cpu instruction_memory rv32im_test_support SystemC::systemc)
+target_compile_definitions(${RETIRE_TARGET} PRIVATE
+    RTL_MODEL_HEADER="${RETIRE_MODEL}.h" RTL_MODEL_CLASS=${RETIRE_MODEL} RTL_MODE=3)
+verilate(${RETIRE_TARGET} SYSTEMC PREFIX ${RETIRE_MODEL} TOP_MODULE core_test_wrapper
+    SOURCES ${TINY5_RTL_SOURCES} ${TINY5_TOP_SOURCES} sim/core_test_wrapper.sv
+    VERILATOR_ARGS ${TINY5_LINT_ARGS} -GOOO_RETIRE=1)
+target_include_directories(${RETIRE_TARGET} SYSTEM PRIVATE
     "${VERILATOR_ROOT}/include" "${VERILATOR_ROOT}/include/vltstd")
 
 set(WAVEFORM_TARGET rtl_add_mul_waveform)
@@ -100,6 +114,8 @@ if(BUILD_TESTING)
     set_tests_properties(rtl_dual_inorder PROPERTIES TIMEOUT 120)
     add_test(NAME rtl_dual_ooo COMMAND ${OOO_TARGET})
     set_tests_properties(rtl_dual_ooo PROPERTIES TIMEOUT 120)
+    add_test(NAME rtl_dual_ooo_retire COMMAND ${RETIRE_TARGET})
+    set_tests_properties(rtl_dual_ooo_retire PROPERTIES TIMEOUT 120)
     add_test(NAME rtl_add_mul_waveform COMMAND ${WAVEFORM_TARGET}
         "${CMAKE_CURRENT_BINARY_DIR}/add_mul.fst")
     set_tests_properties(rtl_add_mul_waveform PROPERTIES TIMEOUT 30)
@@ -136,4 +152,26 @@ if(BUILD_TESTING)
     add_test(NAME rtl_dual_ooo_queued_alu_hazards_waveform COMMAND ${OOO_WAVEFORM_TARGET}
         "${CMAKE_CURRENT_BINARY_DIR}/queued_alu_hazards_dual_ooo.fst" queued_alu_hazards)
     set_tests_properties(rtl_dual_ooo_queued_alu_hazards_waveform PROPERTIES TIMEOUT 30)
+endif()
+
+if(BUILD_TESTING)
+    find_program(TINY5_VERILATOR_EXECUTABLE NAMES verilator HINTS "${VERILATOR_ROOT}/bin" REQUIRED)
+    foreach(SUITE library_tests branch_protocol_tests)
+        set(TEST_BINARY "${CMAKE_CURRENT_BINARY_DIR}/${SUITE}/V${SUITE}")
+        add_custom_command(OUTPUT "${TEST_BINARY}"
+            COMMAND "${TINY5_VERILATOR_EXECUTABLE}" --binary --timing ${TINY5_LINT_ARGS}
+                -Wno-BLKSEQ --timescale 1ns/1ps --top-module ${SUITE}
+                --Mdir "${CMAKE_CURRENT_BINARY_DIR}/${SUITE}" -j 2
+                ${TINY5_RTL_SOURCES} "${CMAKE_CURRENT_SOURCE_DIR}/sim/${SUITE}.sv"
+            DEPENDS ${TINY5_RTL_SOURCES} sim/${SUITE}.sv
+            VERBATIM)
+        add_custom_target(rtl_${SUITE}_build ALL DEPENDS "${TEST_BINARY}")
+        if(SUITE STREQUAL "library_tests")
+            set(TEST_NAME rtl_library_protocols)
+        else()
+            set(TEST_NAME rtl_branch_protocols)
+        endif()
+        add_test(NAME ${TEST_NAME} COMMAND "${TEST_BINARY}")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 30)
+    endforeach()
 endif()

@@ -12,6 +12,10 @@
 #include <iostream>
 #include <string>
 
+#ifndef RV32IM_BRANCH_AT_RETIRE
+#define RV32IM_BRANCH_AT_RETIRE 0
+#endif
+
 namespace {
 
 class Rv32imTestbench : public sc_core::sc_module {
@@ -39,7 +43,7 @@ public:
 
     Rv32imCpu cpu{"cpu", RV32IM_ISSUE_WIDTH,
                   RV32IM_OUT_OF_ORDER ? Rv32imCpu::SchedulingMode::OutOfOrder :
-                                       Rv32imCpu::SchedulingMode::InOrder};
+                                       Rv32imCpu::SchedulingMode::InOrder, RV32IM_BRANCH_AT_RETIRE != 0};
     InstructionMemory memory{"memory"};
     DualRetirementScoreboard scoreboard{"scoreboard"};
 

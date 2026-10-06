@@ -40,7 +40,8 @@ private:
 
     void tick();
     void reset_state();
-    bool execute(std::uint32_t instruction, unsigned& rd, std::uint32_t& value);
+    unsigned execute(std::uint32_t instruction, unsigned& rd, std::uint32_t& value,
+                     std::uint32_t& next_pc);
     void raise_fault(unsigned code);
 
     std::array<std::uint32_t, kRegisterCount> registers_{};

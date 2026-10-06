@@ -39,7 +39,7 @@ public:
 
     SC_HAS_PROCESS(Rv32imCpu);
     explicit Rv32imCpu(sc_core::sc_module_name name, unsigned issue_width = 1,
-                       SchedulingMode mode = SchedulingMode::InOrder);
+                       SchedulingMode mode = SchedulingMode::InOrder, bool branch_at_retire = false);
     ~Rv32imCpu() override;
 
 private:
@@ -48,6 +48,7 @@ private:
     void drive_outputs();
     const unsigned issue_width_;
     const SchedulingMode mode_;
+    const bool branch_at_retire_;
     std::unique_ptr<Pipeline> pipeline_;
     sc_core::sc_event state_changed_;
 };

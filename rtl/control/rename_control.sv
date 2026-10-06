@@ -1,5 +1,5 @@
 module rename_control (
-  input logic clk, reset,
+  input logic clk, reset, restore,
   input logic [1:0] offer_count, dispatch_count,
   input tiny5_pkg::decode_t decoded [2],
   input tiny5_pkg::rob_tag_t allocate_tag [2],
@@ -20,8 +20,15 @@ module rename_control (
   integer used;
   logic blocked;
   issue_t mapped [2];
+  logic [PHYS_REGS-1:0] restore_free;
+  always_comb begin
+    restore_free = '1;
+    restore_free[0] = 0;
+    for (int r = 0; r < 32; r++) restore_free[committed_map[r]] = 0;
+  end
   free_list registers (
-    .clk, .reset, .allocate_count, .available(free_available), .allocate_register(free_register),
+    .clk, .reset, .restore, .restore_free, .allocate_count,
+    .available(free_available), .allocate_register(free_register),
     .release_valid, .release_register
   );
   always_comb begin
@@ -36,6 +43,7 @@ module rename_control (
       mapped[p] = '0;
       mapped[p].valid = 1;
       mapped[p].op = decoded[p].op;
+      mapped[p].branch_offset = decoded[p].immediate;
       mapped[p].meta.pc = decoded[p].pc;
       mapped[p].meta.rd = decoded[p].rd;
       mapped[p].meta.tag = allocate_tag[p];
@@ -85,6 +93,10 @@ module rename_control (
         speculative_map[r] <= phys_t'(r);
         committed_map[r] <= phys_t'(r);
       end
+    end else if (restore) begin
+      // Recovery retires only the branch (rd=0), so the committed map is final.
+      ready_q <= '1;
+      for (int r = 0; r < 32; r++) speculative_map[r] <= committed_map[r];
     end else begin
       for (int p = 0; p < 2; p++) begin
         if (complete_valid[p] && complete_data[p].meta.rd != 0)

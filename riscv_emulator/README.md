@@ -3,7 +3,8 @@
 This directory contains a cycle-accurate SystemC CPU for the arithmetic subset
 of RV32I and RV32M, matching the single and dual-issue in-order cores and the
 dual-issue out-of-order core.
-There are no branches, jumps, loads, stores, CSRs, traps, or system calls.
+Conditional branches are supported with an always-not-taken assumption.
+There are no jumps, loads, stores, CSRs, traps, or system calls.
 
 `Rv32imCpu` models the RTL frontend queues, operand dependencies, issue and
 completion queues, one or two registered ALUs, multiply/divide timing, two
@@ -42,13 +43,19 @@ retire1_valid, retire1_pc, retire1_rd, retire1_value (lane 1)
 halted, fault, fault_code
 ```
 
-`Rv32imCpu(name, issue_width, scheduling_mode)` selects width 1 or 2 and
+`Rv32imCpu(name, issue_width, scheduling_mode, branch_at_retire=false)` selects width 1 or 2 and
 in-order or out-of-order scheduling. The defaults are width 1 and in-order;
 out-of-order mode requires width 2. Lane 1 remains invalid at width 1.
+The default branch policy blocks younger dispatch while fetch continues (option 2).
+Set `branch_at_retire=true` in out-of-order mode for option 4: younger instructions
+execute speculatively; a taken branch retires alone, flushes younger work, and
+restores the committed register map. Both policies match their RTL every cycle.
 
 Instruction responses use `OK=0`, `END_OF_PROGRAM=1`, `ACCESS_FAULT=2`, and
 `RESERVED=3`. CPU faults use `NONE=0`, `ILLEGAL_INSTRUCTION=1`,
-`INSTRUCTION_ACCESS_FAULT=2`, and `RESERVED=3`.
+`INSTRUCTION_ACCESS_FAULT=2`, and `INSTRUCTION_ADDRESS_MISALIGNED=3`.
+A successful branch retires with register zero and value zero. A taken branch
+to a target not aligned to four bytes faults without retiring.
 
 `halted`, `fault`, and `fault_code` remain stable until reset. Every successful
 instruction emits one retirement event; an instruction targeting `x0` emits
@@ -96,6 +103,7 @@ checks. With the current RTL, the shared sequence prints:
   `SRLI`, `SRAI`
 - RV32I register: `ADD`, `SUB`, `SLL`, `SLT`, `SLTU`, `XOR`, `SRL`, `SRA`,
   `OR`, `AND`
+- RV32I branches: `BEQ`, `BNE`, `BLT`, `BGE`, `BLTU`, `BGEU`
 - RV32M: `MUL`, `MULH`, `MULHSU`, `MULHU`, `DIV`, `DIVU`, `REM`, `REMU`
 
 ## Build and run
@@ -107,7 +115,7 @@ On a host with CMake, a C++17 compiler, and SystemC installed:
 ```
 
 This builds with `-Wall -Wextra -Wpedantic -Werror` and runs the CPU catalog in
-all three configurations (including ADD/MUL) and the standalone memory-protocol
+all four configurations (including ADD/MUL) and the standalone memory-protocol
 test through CTest, then prints the catalog results and cycle counts. Verilator
 is not required for this standalone build.
 
@@ -117,7 +125,7 @@ For RTL tests, with Verilator installed:
 ./rtl/run.sh
 ```
 
-This runs all three RTL configurations and writes ADD/MUL, queued-ALU,
+This runs all four RTL configurations and the library/branch protocol suites and writes ADD/MUL, queued-ALU,
 queued-ALU-chain, and queued-ALU-hazards waveforms for each (`add_mul*.fst`,
 `queued_alu*.fst`, `queued_alu_chain*.fst`, and `queued_alu_hazards*.fst` in the
 build directory's `rtl/` subdirectory). To run all

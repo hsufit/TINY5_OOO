@@ -98,14 +98,16 @@ void Rv32imReferenceCpu::tick() {
             } else {
                 unsigned rd = 0U;
                 std::uint32_t value = 0U;
-                if (!execute(imem_rsp_data.read().to_uint(), rd, value)) {
-                    raise_fault(static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION));
+                std::uint32_t next_pc = pc_ + 4U;
+                const unsigned error = execute(imem_rsp_data.read().to_uint(), rd, value, next_pc);
+                if (error != 0U) {
+                    raise_fault(error);
                 } else {
                     retire_pc.write(pc_);
                     retire_rd.write(rd);
                     retire_value.write(value);
                     retire_valid.write(true);
-                    pc_ += 4U;
+                    pc_ = next_pc;
                     state_ = State::IssueRequest;
                 }
             }
@@ -117,14 +119,39 @@ void Rv32imReferenceCpu::tick() {
     }
 }
 
-bool Rv32imReferenceCpu::execute(std::uint32_t instruction, unsigned& retired_rd,
-                        std::uint32_t& retired_value) {
+unsigned Rv32imReferenceCpu::execute(std::uint32_t instruction, unsigned& retired_rd,
+                           std::uint32_t& retired_value, std::uint32_t& next_pc) {
     const std::uint32_t opcode = instruction & 0x7fU;
     const unsigned rd = (instruction >> 7U) & 0x1fU;
     const unsigned funct3 = (instruction >> 12U) & 0x7U;
     const unsigned rs1 = (instruction >> 15U) & 0x1fU;
     const unsigned rs2 = (instruction >> 20U) & 0x1fU;
     const unsigned funct7 = (instruction >> 25U) & 0x7fU;
+
+    if (opcode == 0x63U) {
+        const std::uint32_t lhs = registers_[rs1], rhs = registers_[rs2];
+        bool taken = false;
+        switch (funct3) {
+        case 0: taken = lhs == rhs; break;
+        case 1: taken = lhs != rhs; break;
+        case 4: taken = signed_value(lhs) < signed_value(rhs); break;
+        case 5: taken = signed_value(lhs) >= signed_value(rhs); break;
+        case 6: taken = lhs < rhs; break;
+        case 7: taken = lhs >= rhs; break;
+        default: return static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION);
+        }
+        if (taken) {
+            const std::uint32_t offset = ((instruction >> 31U) << 12U) |
+                (((instruction >> 7U) & 1U) << 11U) | (((instruction >> 25U) & 0x3fU) << 5U) |
+                (((instruction >> 8U) & 0xfU) << 1U);
+            next_pc = pc_ + static_cast<std::uint32_t>(sign_extend(offset, 13U));
+            if ((next_pc & 3U) != 0U)
+                return static_cast<unsigned>(CpuFaultCode::INSTRUCTION_ADDRESS_MISALIGNED);
+        }
+        retired_rd = 0;
+        retired_value = 0;
+        return 0;
+    }
 
     if (opcode == 0x13U) {  // RV32I OP-IMM
         const std::int32_t immediate = sign_extend(instruction >> 20U, 12U);
@@ -152,7 +179,7 @@ bool Rv32imReferenceCpu::execute(std::uint32_t instruction, unsigned& retired_rd
             break;
         case 0x1U: {  // SLLI
             if (funct7 != 0x00U) {
-                return false;
+                return static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION);
             }
             const unsigned shift = (instruction >> 20U) & 0x1fU;
             result = lhs << shift;
@@ -165,23 +192,23 @@ bool Rv32imReferenceCpu::execute(std::uint32_t instruction, unsigned& retired_rd
             } else if (funct7 == 0x20U) {
                 result = arithmetic_shift_right(lhs, shift);
             } else {
-                return false;
+                return static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION);
             }
             break;
         }
         default:
-            return false;
+            return static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION);
         }
 
         registers_[rd] = result;
         registers_[0] = 0U;
         retired_rd = rd;
         retired_value = registers_[rd];
-        return true;
+        return 0;
     }
 
     if (opcode != 0x33U) {  // RV32I OP or RV32M OP
-        return false;
+        return static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION);
     }
 
     const std::uint32_t lhs = registers_[rs1];
@@ -238,14 +265,14 @@ bool Rv32imReferenceCpu::execute(std::uint32_t instruction, unsigned& retired_rd
             result = rhs == 0U ? lhs : lhs % rhs;
             break;
         default:
-            return false;
+            return static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION);
         }
 
         registers_[rd] = result;
         registers_[0] = 0U;
         retired_rd = rd;
         retired_value = registers_[rd];
-        return true;
+        return 0;
     }
 
     switch (funct3) {  // RV32I register-register arithmetic
@@ -255,30 +282,30 @@ bool Rv32imReferenceCpu::execute(std::uint32_t instruction, unsigned& retired_rd
         } else if (funct7 == 0x20U) {
             result = lhs - rhs;  // SUB
         } else {
-            return false;
+            return static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION);
         }
         break;
     case 0x1U:  // SLL
         if (funct7 != 0x00U) {
-            return false;
+            return static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION);
         }
         result = lhs << (rhs & 0x1fU);
         break;
     case 0x2U:  // SLT
         if (funct7 != 0x00U) {
-            return false;
+            return static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION);
         }
         result = signed_value(lhs) < signed_value(rhs) ? 1U : 0U;
         break;
     case 0x3U:  // SLTU
         if (funct7 != 0x00U) {
-            return false;
+            return static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION);
         }
         result = lhs < rhs ? 1U : 0U;
         break;
     case 0x4U:  // XOR
         if (funct7 != 0x00U) {
-            return false;
+            return static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION);
         }
         result = lhs ^ rhs;
         break;
@@ -288,29 +315,28 @@ bool Rv32imReferenceCpu::execute(std::uint32_t instruction, unsigned& retired_rd
         } else if (funct7 == 0x20U) {
             result = arithmetic_shift_right(lhs, rhs & 0x1fU);  // SRA
         } else {
-            return false;
+            return static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION);
         }
         break;
     case 0x6U:  // OR
         if (funct7 != 0x00U) {
-            return false;
+            return static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION);
         }
         result = lhs | rhs;
         break;
     case 0x7U:  // AND
         if (funct7 != 0x00U) {
-            return false;
+            return static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION);
         }
         result = lhs & rhs;
         break;
     default:
-        return false;
+        return static_cast<unsigned>(CpuFaultCode::ILLEGAL_INSTRUCTION);
     }
 
     registers_[rd] = result;
     registers_[0] = 0U;
     retired_rd = rd;
     retired_value = registers_[rd];
-    return true;
+    return 0;
 }
-

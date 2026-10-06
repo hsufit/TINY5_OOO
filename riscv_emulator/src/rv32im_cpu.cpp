@@ -14,9 +14,11 @@ namespace {
 
 enum class Op {
     Add, Sub, Sll, Slt, Sltu, Xor, Srl, Sra, Or, And,
-    Mul, Mulh, Mulhsu, Mulhu, Div, Divu, Rem, Remu
+    Mul, Mulh, Mulhsu, Mulhu, Div, Divu, Rem, Remu,
+    Beq, Bne, Blt, Bge, Bltu, Bgeu
 };
-bool muldiv(Op op) { return op >= Op::Mul; }
+bool muldiv(Op op) { return op >= Op::Mul && op <= Op::Remu; }
+bool branch(Op op) { return op >= Op::Beq && op <= Op::Bgeu; }
 
 struct Fetch {
     std::uint32_t pc{}, instruction{};
@@ -42,15 +44,22 @@ struct Issue {
     Meta meta{};
     Op op{Op::Add};
     Operand a{}, b{};
+    std::uint32_t branch_offset{};
 };
 struct Execute {
     Meta meta{};
     Op op{Op::Add};
-    std::uint32_t a{}, b{};
+    std::uint32_t a{}, b{}, branch_offset{};
+};
+struct BranchResult {
+    bool valid{}, taken{};
+    std::uint32_t target{};
+    unsigned fault{};
 };
 struct Result {
     Meta meta{};
     std::uint32_t value{};
+    BranchResult branch{};
 };
 template<class T> struct Slot {
     bool valid{};
@@ -105,11 +114,26 @@ Decoded decode(const Fetch& fetched) {
                 d.op = f3 == 0U ? Op::Sub : Op::Sra;
             }
         }
+    } else if (opcode == 0x63U) {
+        d.rd = 0;
+        switch (f3) {
+        case 0: d.op = Op::Beq; break;
+        case 1: d.op = Op::Bne; break;
+        case 4: d.op = Op::Blt; break;
+        case 5: d.op = Op::Bge; break;
+        case 6: d.op = Op::Bltu; break;
+        case 7: d.op = Op::Bgeu; break;
+        default: legal = false; break;
+        }
+        d.immediate = ((word >> 19U) & 0x1000U) | ((word >> 20U) & 0x7e0U) |
+                      ((word >> 7U) & 0x1eU) | ((word << 4U) & 0x800U);
+        if ((d.immediate & 0x1000U) != 0U) d.immediate |= 0xffffe000U;
     } else legal = false;
 
     const auto status = static_cast<InstructionResponseStatus>(fetched.status);
     if (status != InstructionResponseStatus::OK || !legal) {
         d.terminal = true;
+        d.op = Op::Add;
         d.rd = d.rs1 = d.rs2 = 0;
         if (status == InstructionResponseStatus::END_OF_PROGRAM) d.fault = 0;
         else if (status != InstructionResponseStatus::OK)
@@ -127,6 +151,7 @@ Result execute(const Execute& e) {
     const unsigned shift = b & 31U;
     const bool overflow = sa == std::numeric_limits<std::int32_t>::min() && sb == -1;
     std::uint32_t value = 0;
+    bool taken = false;
     switch (e.op) {
     case Op::Add: value = a + b; break;
     case Op::Sub: value = a - b; break;
@@ -156,8 +181,22 @@ Result execute(const Execute& e) {
     case Op::Divu: value = b == 0U ? 0xffffffffU : a / b; break;
     case Op::Rem: value = b == 0U ? a : overflow ? 0U : static_cast<std::uint32_t>(sa % sb); break;
     case Op::Remu: value = b == 0U ? a : a % b; break;
+    case Op::Beq: taken = a == b; break;
+    case Op::Bne: taken = a != b; break;
+    case Op::Blt: taken = sa < sb; break;
+    case Op::Bge: taken = sa >= sb; break;
+    case Op::Bltu: taken = a < b; break;
+    case Op::Bgeu: taken = a >= b; break;
     }
-    return {e.meta, e.meta.rd == 0U ? 0U : value};
+    BranchResult resolved;
+    if (branch(e.op)) {
+        resolved.valid = true;
+        resolved.taken = taken;
+        resolved.target = e.meta.pc + e.branch_offset;
+        if (taken && (resolved.target & 3U) != 0U)
+            resolved.fault = static_cast<unsigned>(CpuFaultCode::INSTRUCTION_ADDRESS_MISALIGNED);
+    }
+    return {e.meta, e.meta.rd == 0U ? 0U : value, resolved};
 }
 
 }  // namespace
@@ -165,7 +204,8 @@ Result execute(const Execute& e) {
 // Models core_pipeline with ISSUE_WIDTH=1 or 2 and both scheduling modes.
 struct Rv32imCpu::Pipeline {
     static constexpr unsigned kIqDepth = 8, kRobDepth = 16, kPhysRegs = 64;
-    explicit Pipeline(unsigned width, SchedulingMode scheduling) : issue_width(width), mode(scheduling) {
+    explicit Pipeline(unsigned width, SchedulingMode scheduling, bool retire_branch)
+        : issue_width(width), mode(scheduling), branch_at_retire(retire_branch) {
         if (mode == SchedulingMode::OutOfOrder) {
             for (unsigned r = 0; r < 32; ++r) speculative_map[r] = committed_map[r] = r;
             for (unsigned r = 0; r < kPhysRegs; ++r) {
@@ -176,6 +216,10 @@ struct Rv32imCpu::Pipeline {
     }
     unsigned issue_width;
     SchedulingMode mode;
+    bool branch_at_retire;
+    bool branch_pending{}, redirect_pending{};
+    unsigned branch_tag{};
+    std::uint32_t restart_pc{};
     bool req_valid{}, outstanding{}, fetch_local_stopped{}, fetch_stopped{}, terminal_enqueued{};
     std::uint32_t req_addr{}, fetch_pc{}, pending_pc{};
     Slot<Fetch> fetched{};
@@ -202,6 +246,8 @@ struct Rv32imCpu::Pipeline {
 
     struct Controls {
         bool stop{}, rsp_ready{}, finish{}, terminal_dispatch{};
+        bool redirect{}, backend_flush{}, branch_fault{};
+        std::uint32_t redirect_pc{};
         unsigned fifo_pop{}, id_pop{}, retire_count{}, dispatch_count{};
         std::array<Issue, 2> prepared{};
         std::array<bool, 2> wb_valid{};
@@ -233,6 +279,7 @@ struct Rv32imCpu::Pipeline {
             auto& prepared = c.prepared[p];
             prepared.valid = true;
             prepared.op = d.op;
+            prepared.branch_offset = d.immediate;
             prepared.meta = {d.pc, d.rd, (tail + p) % kRobDepth, 0, 0};
             const unsigned a = candidate_map[d.rs1], b = candidate_map[d.rs2];
             prepared.a = {candidate_ready[a], a, registers[a]};
@@ -259,7 +306,7 @@ struct Rv32imCpu::Pipeline {
         bool md_used = false;
         for (unsigned p = 0; p < issue_width; ++p) {
             const bool stage_ready = !issue2ex[p].valid || c.ex_ready[p];
-            if (!stage_ready || c.finish || halted || fault) continue;
+            if (!stage_ready || c.backend_flush || halted || fault) continue;
             unsigned best_age = kRobDepth;
             for (unsigned i = 0; i < kIqDepth; ++i) {
                 const auto& entry = iq[i];
@@ -280,32 +327,59 @@ struct Rv32imCpu::Pipeline {
         Controls c;
         c.stop = fetch_stopped;
         for (const auto& f : if2id) c.stop = c.stop || decode(f).terminal;
-        c.rsp_ready = outstanding &&
-            (c.stop || fetch_local_stopped || !fetched.valid || fifo.size() < 8U);
-        const bool idle = !req_valid && !outstanding && !fetched.valid;
+        const bool idle = !req_valid && !outstanding && !fetched.valid && !redirect_pending;
         if (!halted && !fault && count != 0U && rob[head].done) {
             if (rob[head].terminal) c.finish = idle;
             else {
                 c.retire_count = 1;
                 const unsigned second = (head + 1U) % kRobDepth;
-                if (issue_width == 2 && count > 1U && rob[second].done && !rob[second].terminal)
+                const bool limit_retire = branch_at_retire &&
+                    ((rob[head].result.branch.valid && rob[head].result.branch.taken) ||
+                     (rob[second].valid && rob[second].result.branch.valid && rob[second].result.branch.taken));
+                if (issue_width == 2 && count > 1U && rob[second].done && !rob[second].terminal && !limit_retire)
                     c.retire_count = 2;
             }
         }
+        if (branch_at_retire && !reset && !c.finish && c.retire_count != 0U &&
+            rob[head].result.branch.valid && rob[head].result.branch.taken && !rob[head].terminal) {
+            c.redirect = true;
+            c.redirect_pc = rob[head].result.branch.target;
+        }
+        c.backend_flush = c.finish || (branch_at_retire && c.redirect);
+        for (unsigned p = 0; p < 2; ++p) {
+            c.wb_valid[p] = ex2wb[p].valid && !c.backend_flush && !halted && !fault && !reset;
+            const auto& result = ex2wb[p].data;
+            if (c.wb_valid[p] && result.branch.fault != 0U) c.branch_fault = true;
+            if (!branch_at_retire && !reset && !c.finish && branch_pending && c.wb_valid[p] &&
+                result.meta.tag == branch_tag && result.branch.valid &&
+                result.branch.fault == 0U && result.branch.taken) {
+                c.redirect = true;
+                c.redirect_pc = result.branch.target;
+            }
+        }
+        c.stop = c.stop || c.branch_fault;
+        c.rsp_ready = outstanding && (c.stop || fetch_local_stopped || c.redirect || redirect_pending ||
+                                      !fetched.valid || fifo.size() < 8U);
         c.fifo_pop = static_cast<unsigned>(std::min({fifo.size(), std::size_t{2}, 2U - if2id.size()}));
         c.id_pop = static_cast<unsigned>(std::min(if2id.size(), 2U - id2dispatch.size()));
         const unsigned iq_space = static_cast<unsigned>(std::count_if(
             iq.begin(), iq.end(), [](const Issue& entry) { return !entry.valid; }));
         unsigned offer_count = std::min({static_cast<unsigned>(id2dispatch.size()), issue_width,
                                          kRobDepth - count, iq_space});
-        if (reset || terminal_enqueued || halted || fault) offer_count = 0;
+        if (!branch_at_retire) {
+            if (branch_pending) offer_count = 0;
+            else if (!id2dispatch.empty() && branch(id2dispatch.front().op))
+                offer_count = std::min(offer_count, 1U);
+        }
+        if (reset || terminal_enqueued || halted || fault || c.backend_flush || c.redirect || c.branch_fault)
+            offer_count = 0;
         if (mode == SchedulingMode::OutOfOrder) prepare_ooo_dispatch(c, offer_count);
         else {
             auto candidate_busy = busy;
             for (unsigned p = 0; p < offer_count; ++p) {
                 const auto& d = id2dispatch[p];
                 c.prepared[p] = {true, {d.pc, d.rd, (tail + p) % kRobDepth, d.rd, 0}, d.op,
-                                 operand(d.rs1), operand(d.rs2)};
+                                 operand(d.rs1), operand(d.rs2), d.immediate};
                 if (d.terminal) {
                     ++c.dispatch_count;
                     c.terminal_dispatch = true;
@@ -322,8 +396,6 @@ struct Rv32imCpu::Pipeline {
                 if (d.rd != 0U) candidate_busy[d.rd] = true;
             }
         }
-        for (unsigned p = 0; p < 2; ++p)
-            c.wb_valid[p] = ex2wb[p].valid && !c.finish && !halted && !fault;
 
         const std::array<bool, 3> valid{alu[0].valid, issue_width == 2 && alu[1].valid,
                                          md_output.valid};
@@ -380,7 +452,7 @@ struct Rv32imCpu::Pipeline {
                     }
                 }
                 const bool stage_ready = !issue2ex[p].valid || c.ex_ready[p];
-                if (!stage_ready || blocked || reset || c.finish || halted || fault || oldest < 0) continue;
+                if (!stage_ready || blocked || reset || c.backend_flush || halted || fault || oldest < 0) continue;
                 const auto& entry = iq[static_cast<unsigned>(oldest)];
                 if (!entry.a.ready || !entry.b.ready ||
                     (muldiv(entry.op) && (!md_issue_available || md_used))) blocked = true;
@@ -398,9 +470,10 @@ struct Rv32imCpu::Pipeline {
         // All decisions use this immutable pre-edge snapshot.
         Pipeline next = *this;
 
-        if (fifo.size() < 8U || c.stop) next.fetched.valid = false;
+        if (fifo.size() < 8U || c.stop || c.redirect) next.fetched.valid = false;
         if (c.stop) next.fetch_local_stopped = true;
-        if (!req_valid && !outstanding && !c.stop && !fetch_local_stopped && !fetched.valid) {
+        if (!req_valid && !outstanding && !c.stop && !fetch_local_stopped && !fetched.valid &&
+            !c.redirect && !redirect_pending) {
             next.req_valid = true;
             next.req_addr = fetch_pc;
         }
@@ -412,16 +485,39 @@ struct Rv32imCpu::Pipeline {
         }
         if (rsp_valid && c.rsp_ready) {
             next.outstanding = false;
-            if (!c.stop && !fetch_local_stopped) {
+            if (!c.stop && !fetch_local_stopped && !c.redirect && !redirect_pending) {
                 next.fetched = {true, {pending_pc, rsp_data, rsp_status}};
                 if (rsp_status != static_cast<unsigned>(InstructionResponseStatus::OK))
                     next.fetch_local_stopped = true;
             }
         }
-        if (c.stop) next.fetch_stopped = true;
-        if (c.terminal_dispatch) next.terminal_enqueued = true;
+        if (c.redirect) {
+            next.restart_pc = c.redirect_pc;
+            next.redirect_pending = true;
+            next.fetch_local_stopped = false;
+            next.fetch_stopped = next.terminal_enqueued = false;
+        } else {
+            if (redirect_pending && !req_valid && !outstanding) {
+                next.fetch_pc = restart_pc;
+                next.redirect_pending = false;
+            }
+            if (c.stop) next.fetch_stopped = true;
+            if (c.terminal_dispatch || c.branch_fault) next.terminal_enqueued = true;
+        }
+        if (c.finish) next.branch_pending = false;
+        else if (!branch_at_retire) {
+            for (unsigned p = 0; p < 2; ++p) {
+                if (p < c.dispatch_count && branch(id2dispatch[p].op)) {
+                    next.branch_pending = true;
+                    next.branch_tag = c.prepared[p].meta.tag;
+                }
+                const auto& result = ex2wb[p].data;
+                if (branch_pending && c.wb_valid[p] && result.meta.tag == branch_tag &&
+                    result.branch.valid && result.branch.fault == 0U) next.branch_pending = false;
+            }
+        }
 
-        if (c.terminal_dispatch || c.finish) {
+        if (c.terminal_dispatch || c.finish || c.redirect || c.branch_fault) {
             next.fifo.clear();
             next.if2id.clear();
             next.id2dispatch.clear();
@@ -452,10 +548,19 @@ struct Rv32imCpu::Pipeline {
                 }
             }
         }
-        if (c.finish) {
-            next.halted = rob[head].fault == 0U;
-            next.fault = rob[head].fault != 0U;
-            next.fault_code = rob[head].fault;
+        if (c.backend_flush) {
+            if (c.finish) {
+                next.halted = rob[head].fault == 0U;
+                next.fault = rob[head].fault != 0U;
+                next.fault_code = rob[head].fault;
+            }
+            if (branch_at_retire && c.redirect) {
+                next.speculative_map = committed_map;
+                next.free_register.fill(true);
+                next.ready_register.fill(true);
+                next.free_register[0] = false;
+                for (unsigned r : committed_map) next.free_register[r] = false;
+            }
             next.iq = {};
             next.rob = {};
             next.head = next.tail = next.count = 0;
@@ -476,6 +581,11 @@ struct Rv32imCpu::Pipeline {
                     assert(rob[result.meta.tag].valid && !rob[result.meta.tag].done);
                     next.rob[result.meta.tag].done = true;
                     next.rob[result.meta.tag].result.value = result.value;
+                    next.rob[result.meta.tag].result.branch = result.branch;
+                    if (result.branch.fault != 0U) {
+                        next.rob[result.meta.tag].terminal = true;
+                        next.rob[result.meta.tag].fault = result.branch.fault;
+                    }
                     if (mode == SchedulingMode::OutOfOrder && result.meta.rd != 0U) {
                         next.registers[result.meta.pdst] = result.value;
                         next.ready_register[result.meta.pdst] = true;
@@ -491,7 +601,7 @@ struct Rv32imCpu::Pipeline {
             for (unsigned p = 0; p < c.dispatch_count; ++p) {
                 const auto& d = id2dispatch[p];
                 next.rob[(tail + p) % kRobDepth] =
-                    {true, d.terminal, d.terminal, d.fault, {c.prepared[p].meta, 0}};
+                    {true, d.terminal, d.terminal, d.fault, {c.prepared[p].meta, 0, {}}};
                 if (!d.terminal && d.rd != 0U) {
                     if (mode == SchedulingMode::OutOfOrder) {
                         const unsigned pdst = c.prepared[p].meta.pdst;
@@ -535,7 +645,7 @@ struct Rv32imCpu::Pipeline {
                     next.issue2ex[p].valid = c.issue_index[p] >= 0;
                     if (c.issue_index[p] >= 0) {
                         const auto& entry = iq[static_cast<unsigned>(c.issue_index[p])];
-                        next.issue2ex[p].data = {entry.meta, entry.op, entry.a.value, entry.b.value};
+                        next.issue2ex[p].data = {entry.meta, entry.op, entry.a.value, entry.b.value, entry.branch_offset};
                     }
                 }
             }
@@ -578,12 +688,15 @@ struct Rv32imCpu::Pipeline {
     }
 };
 
-Rv32imCpu::Rv32imCpu(sc_core::sc_module_name name, unsigned issue_width, SchedulingMode mode)
-    : sc_core::sc_module(name), issue_width_(issue_width), mode_(mode),
-      pipeline_(std::make_unique<Pipeline>(issue_width, mode)) {
+Rv32imCpu::Rv32imCpu(sc_core::sc_module_name name, unsigned issue_width, SchedulingMode mode,
+                     bool branch_at_retire)
+    : sc_core::sc_module(name), issue_width_(issue_width), mode_(mode), branch_at_retire_(branch_at_retire),
+      pipeline_(std::make_unique<Pipeline>(issue_width, mode, branch_at_retire)) {
     if (issue_width != 1U && issue_width != 2U) throw std::invalid_argument("issue_width must be 1 or 2");
     if (mode == SchedulingMode::OutOfOrder && issue_width != 2U)
         throw std::invalid_argument("out-of-order mode requires issue_width 2");
+    if (branch_at_retire && mode != SchedulingMode::OutOfOrder)
+        throw std::invalid_argument("branch retirement recovery requires out-of-order mode");
     SC_METHOD(tick);
     sensitive << clk.pos();
     dont_initialize();
@@ -593,7 +706,7 @@ Rv32imCpu::Rv32imCpu(sc_core::sc_module_name name, unsigned issue_width, Schedul
 Rv32imCpu::~Rv32imCpu() = default;
 
 void Rv32imCpu::tick() {
-    if (reset.read()) *pipeline_ = Pipeline{issue_width_, mode_};
+    if (reset.read()) *pipeline_ = Pipeline{issue_width_, mode_, branch_at_retire_};
     else {
         const auto controls = pipeline_->controls(false);
         pipeline_->advance(controls, imem_req_ready.read(), imem_rsp_valid.read(),

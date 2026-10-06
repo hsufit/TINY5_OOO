@@ -23,7 +23,11 @@ fi
     verilator --lint-only --assert -Wall \
         -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
         --top-module tiny5_dual_ooo \
-        -f rtl/filelists/common.f rtl/tops/tiny5_dual_ooo.sv
+        -f rtl/filelists/dual_ooo.f
+    verilator --lint-only --assert -Wall \
+        -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
+        --top-module tiny5_dual_ooo_retire \
+        -f rtl/filelists/dual_ooo_retire.f
 )
 
 cmake -S "$project_dir" -B "$build_dir" \
@@ -31,10 +35,11 @@ cmake -S "$project_dir" -B "$build_dir" \
     -DBUILD_TESTING=ON \
     -DTINY5_BUILD_RTL=ON
 cmake --build "$build_dir" \
-    --target rtl_single_inorder_tests rtl_dual_inorder_tests rtl_dual_ooo_tests \
-        rtl_add_mul_waveform rtl_dual_add_mul_waveform rtl_dual_ooo_add_mul_waveform --parallel 2
+    --target rtl_single_inorder_tests rtl_dual_inorder_tests rtl_dual_ooo_tests rtl_dual_ooo_retire_tests \
+        rtl_add_mul_waveform rtl_dual_add_mul_waveform rtl_dual_ooo_add_mul_waveform \
+        rtl_library_tests_build rtl_branch_protocol_tests_build --parallel 2
 ctest --test-dir "$build_dir" --verbose \
-    -R '^(rtl_single_inorder|rtl_dual_inorder|rtl_dual_ooo|rtl_add_mul_waveform|rtl_dual_add_mul_waveform|rtl_dual_ooo_add_mul_waveform|rtl_queued_alu_waveform|rtl_dual_queued_alu_waveform|rtl_dual_ooo_queued_alu_waveform|rtl_queued_alu_chain_waveform|rtl_dual_queued_alu_chain_waveform|rtl_dual_ooo_queued_alu_chain_waveform|rtl_queued_alu_hazards_waveform|rtl_dual_queued_alu_hazards_waveform|rtl_dual_ooo_queued_alu_hazards_waveform)$' \
+    -R '^rtl_' \
     --output-on-failure
 printf 'Waveforms: %s %s %s\n' "$build_dir/rtl/add_mul.fst" "$build_dir/rtl/add_mul_dual.fst" "$build_dir/rtl/add_mul_dual_ooo.fst"
 printf '           %s %s %s\n' "$build_dir/rtl/queued_alu.fst" "$build_dir/rtl/queued_alu_dual.fst" "$build_dir/rtl/queued_alu_dual_ooo.fst"

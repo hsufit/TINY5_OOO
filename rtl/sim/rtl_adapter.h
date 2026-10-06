@@ -37,6 +37,17 @@ public:
     sc_core::sc_out<sc_dt::sc_uint<32>> debug_issue_pc1{"debug_issue_pc1"};
     sc_core::sc_out<sc_dt::sc_uint<32>> debug_complete_pc0{"debug_complete_pc0"};
     sc_core::sc_out<sc_dt::sc_uint<32>> debug_complete_pc1{"debug_complete_pc1"};
+    sc_core::sc_out<sc_dt::sc_uint<32>> debug_dispatch_pc0{"debug_dispatch_pc0"};
+    sc_core::sc_out<sc_dt::sc_uint<32>> debug_dispatch_pc1{"debug_dispatch_pc1"};
+    sc_core::sc_out<sc_dt::sc_uint<32>> debug_dispatch_tag0{"debug_dispatch_tag0"};
+    sc_core::sc_out<sc_dt::sc_uint<32>> debug_dispatch_tag1{"debug_dispatch_tag1"};
+    sc_core::sc_out<sc_dt::sc_uint<32>> debug_issue_tag0{"debug_issue_tag0"};
+    sc_core::sc_out<sc_dt::sc_uint<32>> debug_issue_tag1{"debug_issue_tag1"};
+    sc_core::sc_out<sc_dt::sc_uint<2>> debug_dispatch_branch{"debug_dispatch_branch"};
+    sc_core::sc_out<sc_dt::sc_uint<2>> debug_complete_branch{"debug_complete_branch"};
+    sc_core::sc_out<sc_dt::sc_uint<2>> debug_dispatch_limit{"debug_dispatch_limit"};
+    sc_core::sc_out<bool> debug_redirect{"debug_redirect"}, debug_backend_flush{"debug_backend_flush"};
+    sc_core::sc_out<bool> debug_cancel_muldiv{"debug_cancel_muldiv"}, debug_frontend_full{"debug_frontend_full"};
     Model model{"model"};
     SC_HAS_PROCESS(RtlCpuAdapter);
     explicit RtlCpuAdapter(sc_core::sc_module_name name) : sc_module(name) {
@@ -69,8 +80,22 @@ public:
         model.debug_issue_pc1(native_debug_issue_pc1);
         model.debug_complete_pc0(native_debug_complete_pc0);
         model.debug_complete_pc1(native_debug_complete_pc1);
+        model.debug_dispatch_pc0(native_debug_dispatch_pc0);
+        model.debug_dispatch_pc1(native_debug_dispatch_pc1);
+        model.debug_dispatch_tag0(native_debug_dispatch_tag0);
+        model.debug_dispatch_tag1(native_debug_dispatch_tag1);
+        model.debug_issue_tag0(native_debug_issue_tag0);
+        model.debug_issue_tag1(native_debug_issue_tag1);
+        model.debug_dispatch_branch(native_debug_dispatch_branch);
+        model.debug_complete_branch(native_debug_complete_branch);
+        model.debug_dispatch_limit(native_debug_dispatch_limit);
+        model.debug_redirect(debug_redirect);
+        model.debug_backend_flush(debug_backend_flush);
+        model.debug_cancel_muldiv(debug_cancel_muldiv);
+        model.debug_frontend_full(debug_frontend_full);
         SC_METHOD(convert);
         sensitive << imem_rsp_data << imem_rsp_status << native_imem_req_addr << native_retire0_pc << native_retire1_pc << native_retire0_rd << native_retire1_rd << native_retire0_value << native_retire1_value << native_fault_code << native_debug_issue_valid << native_debug_complete_valid << native_debug_dispatch_count << native_debug_rob_capacity << native_debug_iq_capacity << native_debug_issue_pc0 << native_debug_issue_pc1 << native_debug_complete_pc0 << native_debug_complete_pc1;
+        sensitive << native_debug_dispatch_pc0 << native_debug_dispatch_pc1 << native_debug_dispatch_tag0 << native_debug_dispatch_tag1 << native_debug_issue_tag0 << native_debug_issue_tag1 << native_debug_dispatch_branch << native_debug_complete_branch << native_debug_dispatch_limit;
     }
 private:
     sc_core::sc_signal<std::uint32_t> native_imem_rsp_data{"native_imem_rsp_data"};
@@ -92,7 +117,26 @@ private:
     sc_core::sc_signal<std::uint32_t> native_debug_issue_pc1{"native_debug_issue_pc1"};
     sc_core::sc_signal<std::uint32_t> native_debug_complete_pc0{"native_debug_complete_pc0"};
     sc_core::sc_signal<std::uint32_t> native_debug_complete_pc1{"native_debug_complete_pc1"};
+    sc_core::sc_signal<std::uint32_t> native_debug_dispatch_pc0{"native_debug_dispatch_pc0"};
+    sc_core::sc_signal<std::uint32_t> native_debug_dispatch_pc1{"native_debug_dispatch_pc1"};
+    sc_core::sc_signal<std::uint32_t> native_debug_dispatch_tag0{"native_debug_dispatch_tag0"};
+    sc_core::sc_signal<std::uint32_t> native_debug_dispatch_tag1{"native_debug_dispatch_tag1"};
+    sc_core::sc_signal<std::uint32_t> native_debug_issue_tag0{"native_debug_issue_tag0"};
+    sc_core::sc_signal<std::uint32_t> native_debug_issue_tag1{"native_debug_issue_tag1"};
+    sc_core::sc_signal<std::uint32_t> native_debug_dispatch_branch{"native_debug_dispatch_branch"};
+    sc_core::sc_signal<std::uint32_t> native_debug_complete_branch{"native_debug_complete_branch"};
+    sc_core::sc_signal<std::uint32_t> native_debug_dispatch_limit{"native_debug_dispatch_limit"};
     void convert() {
+        debug_dispatch_pc0.write(native_debug_dispatch_pc0.read());
+        debug_dispatch_pc1.write(native_debug_dispatch_pc1.read());
+        debug_dispatch_tag0.write(native_debug_dispatch_tag0.read());
+        debug_dispatch_tag1.write(native_debug_dispatch_tag1.read());
+        debug_issue_tag0.write(native_debug_issue_tag0.read());
+        debug_issue_tag1.write(native_debug_issue_tag1.read());
+        debug_dispatch_branch.write(native_debug_dispatch_branch.read());
+        debug_complete_branch.write(native_debug_complete_branch.read());
+        debug_dispatch_limit.write(native_debug_dispatch_limit.read());
+
         native_imem_rsp_data.write(imem_rsp_data.read().to_uint());
         native_imem_rsp_status.write(imem_rsp_status.read().to_uint());
         imem_req_addr.write(native_imem_req_addr.read());

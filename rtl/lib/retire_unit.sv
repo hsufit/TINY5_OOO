@@ -1,6 +1,7 @@
 module retire_unit #(parameter int RETIRE_WIDTH = 2) (
   input logic clk, reset, fetch_idle,
   input tiny5_pkg::rob_entry_t head_data [2],
+  input logic [1:0] retire_limit,
   output logic [1:0] retire_count,
   output logic finish,
   output logic retire0_valid, retire1_valid,
@@ -16,7 +17,7 @@ module retire_unit #(parameter int RETIRE_WIDTH = 2) (
       if (head_data[0].terminal) finish = fetch_idle;
       else begin
         retire_count = 1;
-        if (RETIRE_WIDTH == 2 && head_data[1].valid && head_data[1].done &&
+        if (RETIRE_WIDTH == 2 && retire_limit > 1 && head_data[1].valid && head_data[1].done &&
             !head_data[1].terminal) retire_count = 2;
       end
     end

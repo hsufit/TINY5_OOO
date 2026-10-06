@@ -8,6 +8,7 @@
 #include "test_catalog.h"
 #include <systemc>
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <random>
@@ -40,6 +41,11 @@ std::uint32_t imm(unsigned f3, unsigned rd, unsigned rs, unsigned immediate) {
 }
 std::uint32_t reg(unsigned f7, unsigned f3, unsigned rd, unsigned a, unsigned b) {
     return (f7 << 25U) | (b << 20U) | (a << 15U) | (f3 << 12U) | (rd << 7U) | 0x33U;
+}
+std::uint32_t branch(unsigned f3, unsigned a, unsigned b, int offset) {
+    const auto value = static_cast<std::uint32_t>(offset);
+    return ((value & 0x1000U) << 19U) | ((value & 0x7e0U) << 20U) | (b << 20U) |
+           (a << 15U) | (f3 << 12U) | ((value & 0x1eU) << 7U) | ((value & 0x800U) >> 4U) | 0x63U;
 }
 std::vector<std::uint8_t> bytes(const std::vector<std::uint32_t>& words) {
     std::vector<std::uint8_t> result;
@@ -81,8 +87,8 @@ public:
     RetireSignals rtl_retire{"rtl_retire"}, reference_retire{"reference_retire"}, systemc_retire{"systemc_retire"};
     RtlCpuAdapter<RTL_MODEL_CLASS> cpu{"cpu"};
     Rv32imCpu systemc_cpu{"systemc_cpu", RTL_MODE == 0 ? 1U : 2U,
-                          RTL_MODE == 2 ? Rv32imCpu::SchedulingMode::OutOfOrder :
-                                          Rv32imCpu::SchedulingMode::InOrder};
+                          RTL_MODE >= 2 ? Rv32imCpu::SchedulingMode::OutOfOrder :
+                                          Rv32imCpu::SchedulingMode::InOrder, RTL_MODE == 3};
     Rv32imReferenceCpu reference{"reference"};
     InstructionMemory memory{"memory"}, reference_memory{"reference_memory"}, systemc_memory{"systemc_memory"};
     DualRetirementScoreboard scoreboard{"scoreboard"}, reference_scoreboard{"reference_scoreboard"},
@@ -91,6 +97,19 @@ public:
     sc_signal<sc_uint<2>> dispatch_count{"dispatch_count"}, rob_capacity{"rob_capacity"}, iq_capacity{"iq_capacity"};
     sc_signal<sc_uint<32>> issue_pc0{"issue_pc0"}, issue_pc1{"issue_pc1"};
     sc_signal<sc_uint<32>> complete_pc0{"complete_pc0"}, complete_pc1{"complete_pc1"};
+
+    sc_signal<sc_uint<32>> debug_dispatch_pc0{"debug_dispatch_pc0"};
+    sc_signal<sc_uint<32>> debug_dispatch_pc1{"debug_dispatch_pc1"};
+    sc_signal<sc_uint<32>> debug_dispatch_tag0{"debug_dispatch_tag0"};
+    sc_signal<sc_uint<32>> debug_dispatch_tag1{"debug_dispatch_tag1"};
+    sc_signal<sc_uint<32>> debug_issue_tag0{"debug_issue_tag0"};
+    sc_signal<sc_uint<32>> debug_issue_tag1{"debug_issue_tag1"};
+    sc_signal<sc_uint<2>> debug_dispatch_branch{"debug_dispatch_branch"};
+    sc_signal<sc_uint<2>> debug_complete_branch{"debug_complete_branch"};
+    sc_signal<sc_uint<2>> debug_dispatch_limit{"debug_dispatch_limit"};
+    sc_signal<bool> debug_redirect{"debug_redirect"}, debug_backend_flush{"debug_backend_flush"};
+
+    sc_signal<bool> debug_cancel_muldiv{"debug_cancel_muldiv"}, debug_frontend_full{"debug_frontend_full"};
 
     SC_HAS_PROCESS(Testbench);
     explicit Testbench(sc_core::sc_module_name name) : sc_module(name) {
@@ -128,6 +147,19 @@ public:
         cpu.debug_complete_valid(complete_valid); cpu.debug_complete_pc0(complete_pc0);
         cpu.debug_complete_pc1(complete_pc1); cpu.debug_dispatch_count(dispatch_count);
         cpu.debug_rob_capacity(rob_capacity); cpu.debug_iq_capacity(iq_capacity);
+        cpu.debug_dispatch_pc0(debug_dispatch_pc0);
+        cpu.debug_dispatch_pc1(debug_dispatch_pc1);
+        cpu.debug_dispatch_tag0(debug_dispatch_tag0);
+        cpu.debug_dispatch_tag1(debug_dispatch_tag1);
+        cpu.debug_issue_tag0(debug_issue_tag0);
+        cpu.debug_issue_tag1(debug_issue_tag1);
+        cpu.debug_dispatch_branch(debug_dispatch_branch);
+        cpu.debug_complete_branch(debug_complete_branch);
+        cpu.debug_dispatch_limit(debug_dispatch_limit);
+        cpu.debug_redirect(debug_redirect);
+        cpu.debug_backend_flush(debug_backend_flush);
+        cpu.debug_cancel_muldiv(debug_cancel_muldiv);
+        cpu.debug_frontend_full(debug_frontend_full);
         SC_METHOD(filter_status);
         sensitive << reserved_status << rtl_fetch.rsp_status << reference_fetch.rsp_status
                   << systemc_fetch.rsp_status;
@@ -166,7 +198,12 @@ private:
     }
     void observe() {
         if (reset.read()) {
-            issued_.clear(); completed_.clear();
+            issued_.clear(); completed_.clear(); issued_age_.clear(); next_age_ = 0;
+            dispatch_age_.fill(0); branch_pending_ = false; run_redirects_ = 0;
+            run_speculative_issues_ = 0; run_fetch_while_blocked_ = 0;
+            run_cancelled_muldiv_ = 0; run_frontend_full_ = 0;
+            redirect_before_divide_ = false; divide_completed_ = false;
+            branch_dispatched_ = false; branch_completed_ = false;
             request_gap_ = max_request_gap_ = 0;
             seen_request_ = false;
             return;
@@ -177,7 +214,40 @@ private:
             seen_request_ = true;
             request_gap_ = 0;
         }
+        if (debug_cancel_muldiv.read()) ++run_cancelled_muldiv_;
+        if (debug_frontend_full.read()) ++run_frontend_full_;
         const unsigned issued = issue_valid.read().to_uint();
+        if (RTL_MODE < 3 && branch_pending_ && dispatch_count.read() != 0U)
+            fail("younger dispatch while branch is unresolved");
+        if (debug_dispatch_limit.read() == 0U && rtl_fetch.req_valid.read() && rtl_fetch.req_ready.read())
+            ++run_fetch_while_blocked_;
+        const unsigned dispatch_tags[] = {debug_dispatch_tag0.read().to_uint(), debug_dispatch_tag1.read().to_uint()};
+        const unsigned issue_tags[] = {debug_issue_tag0.read().to_uint(), debug_issue_tag1.read().to_uint()};
+        for (unsigned p = 0; p < dispatch_count.read().to_uint(); ++p) {
+            dispatch_age_.at(dispatch_tags[p]) = next_age_++;
+            if ((debug_dispatch_branch.read().to_uint() & (1U << p)) != 0U) {
+                branch_pending_ = true;
+                branch_dispatched_ = true;
+                ++branch_dispatch_lanes_[p];
+            }
+        }
+        for (unsigned p = 0; p < 2; ++p)
+            if ((issued & (1U << p)) != 0U) {
+                issued_age_.push_back(dispatch_age_.at(issue_tags[p]));
+                if (branch_dispatched_ && !branch_completed_ &&
+                    (p == 0 ? issue_pc0.read() : issue_pc1.read()).to_uint() > observed_branch_pc_)
+                    ++run_speculative_issues_;
+            }
+        if (debug_complete_branch.read() != 0U) {
+            branch_pending_ = false;
+            branch_completed_ = true;
+        }
+        if (debug_redirect.read()) {
+            ++run_redirects_;
+            if (!divide_completed_) redirect_before_divide_ = true;
+            if (RTL_MODE == 3 && !debug_backend_flush.read()) fail("retirement redirect without backend flush");
+            if (RTL_MODE < 3 && debug_backend_flush.read()) fail("blocking branch flushed older backend work");
+        }
         if (issued == 3U) ++dual_issue_cycles_;
         if (rtl_retire.valid[1].read()) ++dual_retire_cycles_;
         if (dispatch_count.read() == 2U) ++dual_dispatch_cycles_;
@@ -186,6 +256,8 @@ private:
         if ((issued & 1U) != 0U) issued_.push_back(issue_pc0.read().to_uint());
         if ((issued & 2U) != 0U) issued_.push_back(issue_pc1.read().to_uint());
         const unsigned completed = complete_valid.read().to_uint();
+        if (((completed & 1U) && complete_pc0.read() == 0U) ||
+            ((completed & 2U) && complete_pc1.read() == 0U)) divide_completed_ = true;
         if (completed == 3U) ++dual_complete_cycles_;
         if ((completed & 1U) != 0U) completed_.push_back(complete_pc0.read().to_uint());
         if ((completed & 2U) != 0U) completed_.push_back(complete_pc1.read().to_uint());
@@ -306,9 +378,9 @@ private:
             if (rtl_retire.halted.read() != (catalog->expected_termination == ExpectedTermination::Halt))
                 fail("catalog halt expectation");
         }
-        if (!std::is_sorted(issued_.begin(), issued_.end())) {
+        if (!std::is_sorted(issued_age_.begin(), issued_age_.end())) {
             ++reordered_programs_;
-            if (RTL_MODE != 2) fail("in-order controller issued past an older instruction");
+            if (RTL_MODE < 2) fail("in-order controller issued past an older instruction");
         }
         if (require_overlap) {
             const auto divide = std::find(completed_.begin(), completed_.end(), 0U);
@@ -350,6 +422,62 @@ private:
             }
         }
         differential("empty program", {});
+        for (unsigned mode = 0; mode < 2; ++mode) {
+            const auto timing = mode == 0 ? InstructionMemory::normal_timing() : InstructionMemory::stalled_timing();
+            active_name_ = "branch resolution versus retirement redirect [" + std::to_string(mode) + "]";
+            const auto taken = bytes({reg(1, 4, 1, 0, 0), branch(0, 0, 0, 12),
+                                      imm(0, 1, 0, 99), reg(1, 4, 2, 0, 0), reg(0, 0, 3, 1, 0)});
+            start(taken, timing);
+            check(taken);
+            if (run_redirects_ != 1) fail("expected one taken-branch redirect");
+            if (redirect_before_divide_ != (RTL_MODE != 3))
+                fail("branch redirected at the wrong stage relative to the older divide");
+
+            active_name_ = "independent work while branch waits for divide [" + std::to_string(mode) + "]";
+            const auto untaken = bytes({reg(1, 4, 1, 0, 0), branch(0, 1, 0, 12),
+                imm(0, 2, 0, 7), imm(0, 3, 0, 9), imm(0, 4, 0, 11), reg(0, 0, 5, 2, 3)});
+            start(untaken, timing);
+            check(untaken);
+            if (run_redirects_ != 0) fail("untaken branch redirected fetch");
+            if ((run_speculative_issues_ != 0) != (RTL_MODE == 3))
+                fail("unexpected execution of younger work before branch resolution");
+            if (RTL_MODE < 3 && run_fetch_while_blocked_ == 0)
+                fail("fetch did not continue while dispatch was blocked");
+        }
+        const auto cancel_divide = bytes({reg(1, 4, 1, 0, 0), branch(1, 1, 0, 12),
+            reg(1, 4, 2, 0, 0), imm(0, 1, 0, 99), reg(0, 0, 3, 1, 0)});
+        differential("taken branch cancels younger divide and renamed writer", cancel_divide);
+        if (RTL_MODE == 3 && run_cancelled_muldiv_ == 0)
+            fail("recovery did not exercise cancellation of an executing younger divide");
+        differential("older taken branch discards younger branch misalignment", bytes({
+            reg(1, 4, 1, 0, 0), branch(1, 1, 0, 20), branch(0, 0, 0, 2),
+            0xffffffffU, imm(0, 1, 0, 99), imm(0, 2, 0, 99), reg(0, 0, 3, 1, 0)}));
+        differential("older untaken branch preserves younger branch misalignment", bytes({
+            reg(1, 4, 1, 0, 0), branch(0, 1, 0, 20), branch(0, 0, 0, 2),
+            imm(0, 2, 0, 99), imm(0, 3, 0, 99), imm(0, 4, 0, 99), imm(0, 5, 0, 7)}));
+        differential("multiple completed branches behind older divide", bytes({
+            reg(1, 4, 1, 0, 0), branch(1, 0, 0, 8), branch(0, 0, 0, 12),
+            branch(0, 0, 0, 2), imm(0, 1, 0, 99), reg(0, 0, 2, 1, 0)}));
+        std::vector<std::uint32_t> branch_pressure;
+        // Keep the branch waiting long enough to fill all frontend buffers even
+        // with stalled memory; three divides are insufficient in that profile.
+        for (unsigned rd = 1; rd <= 8; ++rd) branch_pressure.push_back(reg(1, 4, rd, rd-1, 0));
+        branch_pressure.push_back(branch(1, 8, 0, 128));
+        for (unsigned i = 0; i < 31; ++i) branch_pressure.push_back(imm(0, 9, 0, i));
+        branch_pressure.push_back(reg(0, 0, 10, 8, 0));
+        differential("branch stalls fill frontend and speculative backend", bytes(branch_pressure));
+        if (RTL_MODE < 3 && run_frontend_full_ == 0) fail("branch test did not fill the frontend");
+        for (unsigned seed = 1; seed <= 8; ++seed) {
+            std::mt19937 random(seed);
+            std::vector<std::uint32_t> words;
+            for (unsigned rd = 1; rd < 16; ++rd) words.push_back(imm(0, rd, 0, random()));
+            constexpr unsigned conditions[] = {0, 1, 4, 5, 6, 7};
+            for (unsigned i = 0; i < 64; ++i) {
+                words.push_back(branch(conditions[random() % 6], random() % 16, random() % 16, 8));
+                words.push_back(reg(random() % 2, random() % 8, 1 + random() % 15, random() % 16, random() % 16));
+            }
+            differential("random forward branches seed " + std::to_string(seed), bytes(words));
+        }
         differential("independent integer work during divide", bytes({
             reg(1, 4, 1, 0, 0), imm(0, 2, 0, 7), reg(0, 0, 3, 2, 2)}), true);
         differential("queued ALU work behind multiply",
@@ -409,7 +537,7 @@ private:
         start(early_illegal, {0U, 11U});
         check(early_illegal);
         for (const auto illegal : {imm(1, 1, 0, 32), imm(5, 1, 0, 32), reg(2, 0, 1, 0, 0),
-                                   0x00000037U, 0x00000017U, 0x00000003U, 0x00000063U, 0x00000073U})
+                                   0x00000037U, 0x00000017U, 0x00000003U, 0x00002063U, 0x00003063U, 0x00000073U})
             differential("strict illegal encoding " + std::to_string(illegal), bytes({imm(0, 1, 0, 5), illegal}));
         for (unsigned seed = 1; seed <= 16; ++seed)
             differential("random arithmetic seed " + std::to_string(seed), random_program(seed));
@@ -430,12 +558,24 @@ private:
             start(one, InstructionMemory::normal_timing());
             check(one);
         }
+        for (const unsigned delay : {20U, 35U, 45U, 55U, 85U}) {
+            active_name_ = "reset during branch execution or recovery after " + std::to_string(delay);
+            start(cancel_divide, InstructionMemory::normal_timing());
+            for (unsigned i = 0; i < delay; ++i) {
+                wait(clock.negedge_event());
+                sample_cycle();
+            }
+            start(one, InstructionMemory::normal_timing());
+            check(one);
+        }
         active_name_ = "microarchitecture coverage";
         if (RTL_MODE != 0 && (dual_issue_cycles_ == 0 || dual_retire_cycles_ == 0 || dual_dispatch_cycles_ == 0))
             fail("dual issue/retirement/dispatch was not exercised");
         if (RTL_MODE == 0 && (dual_issue_cycles_ != 0 || dual_retire_cycles_ != 0))
             fail("single-issue width exceeded");
-        if (RTL_MODE == 2 && reordered_programs_ == 0) fail("out-of-order bypass was not exercised");
+        if (RTL_MODE >= 2 && reordered_programs_ == 0) fail("out-of-order bypass was not exercised");
+        if (branch_dispatch_lanes_[0] == 0 || (RTL_MODE != 0 && branch_dispatch_lanes_[1] == 0))
+            fail("branch dispatch lanes were not exercised");
         if (dual_complete_cycles_ == 0) fail("simultaneous ALU and mul/div writeback was not exercised");
         if (full_iq_cycles_ == 0 || full_rob_cycles_ == 0)
             fail("issue and completion backpressure was not exercised");
@@ -443,6 +583,7 @@ private:
                   << " dual_retire_cycles=" << dual_retire_cycles_ << " dual_dispatch_cycles=" << dual_dispatch_cycles_
                   << " reordered_programs=" << reordered_programs_ << " IQ_full=" << full_iq_cycles_
                   << " ROB_full=" << full_rob_cycles_
+                  << " branch_lane0=" << branch_dispatch_lanes_[0] << " branch_lane1=" << branch_dispatch_lanes_[1]
                   << " dual_complete_cycles=" << dual_complete_cycles_ << '\n';
         if (failures_ == 0) std::cout << "All RTL differential tests passed\n";
         sc_core::sc_stop();
@@ -453,6 +594,14 @@ private:
     bool cycle_mismatch_{};
     bool paired_retire_12_16_seen_{};
     std::vector<std::uint32_t> issued_, completed_;
+    std::vector<std::uint64_t> issued_age_;
+    std::array<std::uint64_t, 16> dispatch_age_{};
+    std::uint64_t next_age_{0};
+    std::array<unsigned, 2> branch_dispatch_lanes_{};
+    bool branch_pending_{false}, branch_dispatched_{false}, branch_completed_{false};
+    bool divide_completed_{false}, redirect_before_divide_{false};
+    unsigned run_redirects_{0}, run_speculative_issues_{0}, run_fetch_while_blocked_{0};
+    unsigned observed_branch_pc_{4}, run_cancelled_muldiv_{0}, run_frontend_full_{0};
     unsigned failures_{0}, programs_{0}, dual_issue_cycles_{0}, dual_retire_cycles_{0};
     unsigned dual_dispatch_cycles_{0}, reordered_programs_{0}, full_iq_cycles_{0}, full_rob_cycles_{0};
     unsigned dual_complete_cycles_{0}, request_gap_{0}, max_request_gap_{0};

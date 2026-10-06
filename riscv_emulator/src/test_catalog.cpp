@@ -106,7 +106,8 @@ const ProgramTest& rv32im_queued_alu_hazards_test() {
 }
 
 const std::vector<ProgramTest>& rv32im_test_catalog() {
-    static const std::vector<ProgramTest> tests{
+    static const std::vector<ProgramTest> tests = [] {
+        std::vector<ProgramTest> result{
         rv32im_add_mul_test(),
         success(
             "RV32I register arithmetic",
@@ -211,6 +212,10 @@ const std::vector<ProgramTest>& rv32im_test_catalog() {
               CpuFaultCode::ILLEGAL_INSTRUCTION),
         fault("truncated instruction", {0x93, 0x00, 0xa0},
               CpuFaultCode::INSTRUCTION_ACCESS_FAULT),
-    };
+        };
+        auto branches = branch_test_catalog();
+        result.insert(result.end(), branches.begin(), branches.end());
+        return result;
+    }();
     return tests;
 }

@@ -39,6 +39,19 @@ public:
     sc_signal<sc_uint<32>> issue_pc0{"issue_pc0"}, issue_pc1{"issue_pc1"};
     sc_signal<sc_uint<32>> complete_pc0{"complete_pc0"}, complete_pc1{"complete_pc1"};
 
+    sc_signal<sc_uint<32>> debug_dispatch_pc0{"debug_dispatch_pc0"};
+    sc_signal<sc_uint<32>> debug_dispatch_pc1{"debug_dispatch_pc1"};
+    sc_signal<sc_uint<32>> debug_dispatch_tag0{"debug_dispatch_tag0"};
+    sc_signal<sc_uint<32>> debug_dispatch_tag1{"debug_dispatch_tag1"};
+    sc_signal<sc_uint<32>> debug_issue_tag0{"debug_issue_tag0"};
+    sc_signal<sc_uint<32>> debug_issue_tag1{"debug_issue_tag1"};
+    sc_signal<sc_uint<2>> debug_dispatch_branch{"debug_dispatch_branch"};
+    sc_signal<sc_uint<2>> debug_complete_branch{"debug_complete_branch"};
+    sc_signal<sc_uint<2>> debug_dispatch_limit{"debug_dispatch_limit"};
+    sc_signal<bool> debug_redirect{"debug_redirect"}, debug_backend_flush{"debug_backend_flush"};
+
+    sc_signal<bool> debug_cancel_muldiv{"debug_cancel_muldiv"}, debug_frontend_full{"debug_frontend_full"};
+
     RtlCpuAdapter<RTL_MODEL_CLASS> cpu{"cpu"};
     InstructionMemory memory{"memory"};
     DualRetirementScoreboard scoreboard{"scoreboard"};
@@ -76,6 +89,20 @@ public:
         cpu.debug_issue_pc1(issue_pc1);
         cpu.debug_complete_pc0(complete_pc0);
         cpu.debug_complete_pc1(complete_pc1);
+
+        cpu.debug_dispatch_pc0(debug_dispatch_pc0);
+        cpu.debug_dispatch_pc1(debug_dispatch_pc1);
+        cpu.debug_dispatch_tag0(debug_dispatch_tag0);
+        cpu.debug_dispatch_tag1(debug_dispatch_tag1);
+        cpu.debug_issue_tag0(debug_issue_tag0);
+        cpu.debug_issue_tag1(debug_issue_tag1);
+        cpu.debug_dispatch_branch(debug_dispatch_branch);
+        cpu.debug_complete_branch(debug_complete_branch);
+        cpu.debug_dispatch_limit(debug_dispatch_limit);
+        cpu.debug_redirect(debug_redirect);
+        cpu.debug_backend_flush(debug_backend_flush);
+        cpu.debug_cancel_muldiv(debug_cancel_muldiv);
+        cpu.debug_frontend_full(debug_frontend_full);
 
         memory.clk(clock);
         memory.reset(reset);

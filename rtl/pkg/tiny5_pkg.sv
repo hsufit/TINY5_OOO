@@ -8,10 +8,12 @@ package tiny5_pkg;
   typedef enum logic [4:0] {
     OP_ADD, OP_SUB, OP_SLL, OP_SLT, OP_SLTU, OP_XOR, OP_SRL, OP_SRA,
     OP_OR, OP_AND, OP_MUL, OP_MULH, OP_MULHSU, OP_MULHU,
-    OP_DIV, OP_DIVU, OP_REM, OP_REMU
+    OP_DIV, OP_DIVU, OP_REM, OP_REMU,
+    OP_BEQ, OP_BNE, OP_BLT, OP_BGE, OP_BLTU, OP_BGEU
   } op_t;
   localparam logic [1:0] IMEM_OK = 0, IMEM_END = 1, IMEM_FAULT = 2;
-  localparam logic [1:0] FAULT_NONE = 0, FAULT_ILLEGAL = 1, FAULT_ACCESS = 2;
+  localparam logic [1:0] FAULT_NONE = 0, FAULT_ILLEGAL = 1, FAULT_ACCESS = 2,
+                         FAULT_MISALIGNED = 3;
   typedef struct packed {
     logic [31:0] pc, instruction;
     logic [1:0] status;
@@ -40,23 +42,35 @@ package tiny5_pkg;
     meta_t meta;
     op_t op;
     operand_t a, b;
+    logic [31:0] branch_offset;
   } issue_t;
   typedef struct packed {
     meta_t meta;
     op_t op;
     logic [31:0] a, b;
+    logic [31:0] branch_offset;
   } execute_t;
+  typedef struct packed {
+    logic valid, taken;
+    logic [31:0] target;
+    logic [1:0] fault;
+  } branch_result_t;
   typedef struct packed {
     meta_t meta;
     logic [31:0] value;
+    branch_result_t branch;
   } result_t;
   typedef struct packed {
     logic valid, done, terminal;
     logic [1:0] fault;
     meta_t meta;
     logic [31:0] value;
+    branch_result_t branch;
   } rob_entry_t;
   function automatic logic is_muldiv(input op_t op);
-    return op >= OP_MUL;
+    return op >= OP_MUL && op <= OP_REMU;
+  endfunction
+  function automatic logic is_branch(input op_t op);
+    return op >= OP_BEQ && op <= OP_BGEU;
   endfunction
 endpackage

@@ -25,6 +25,7 @@ struct ProgramTest {
     CpuFaultCode expected_fault;
 };
 
+std::vector<ProgramTest> branch_test_catalog();
 const std::vector<ProgramTest>& rv32im_test_catalog();
 const ProgramTest& rv32im_add_mul_test();
 const ProgramTest& rv32im_queued_alu_behind_multiply_test();

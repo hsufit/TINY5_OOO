@@ -14,7 +14,7 @@ enum class CpuFaultCode : std::uint8_t {
     NONE = 0,
     ILLEGAL_INSTRUCTION = 1,
     INSTRUCTION_ACCESS_FAULT = 2,
-    RESERVED = 3,
+    INSTRUCTION_ADDRESS_MISALIGNED = 3,
 };
 
 #endif

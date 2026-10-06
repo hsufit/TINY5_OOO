@@ -1,6 +1,7 @@
 module core_pipeline #(
   parameter int ISSUE_WIDTH = 2,
-  parameter bit OUT_OF_ORDER = 0
+  parameter bit OUT_OF_ORDER = 0,
+  parameter bit BRANCH_AT_RETIRE = 0
 ) (
   input logic clk, reset,
   output logic imem_req_valid,
@@ -35,9 +36,33 @@ module core_pipeline #(
   logic [1:0] result_valid, result_ready, wb_stage_valid, wb_valid;
   result_t result_data [2], wb_data [2];
   logic md_available, md_issue_available;
+  logic [1:0] dispatch_limit, retire_limit;
+  logic redirect_valid, branch_front_flush, branch_backend_flush, restore;
+  logic backend_flush, branch_fault;
+  logic [31:0] redirect_pc;
+
+  if (BRANCH_AT_RETIRE) begin : retire_branches
+    branch_control_retire control (
+      .clk, .reset, .finish, .decoded(dispatch_data), .dispatch_count, .allocate_tag,
+      .complete_valid(wb_valid), .complete_data(wb_data), .head_data(retire_data), .retire_count,
+      .dispatch_limit, .retire_limit, .redirect_valid, .redirect_pc,
+      .front_flush(branch_front_flush), .backend_flush(branch_backend_flush), .restore
+    );
+  end else begin : blocking_branches
+    branch_control_blocking control (
+      .clk, .reset, .finish, .decoded(dispatch_data), .dispatch_count, .allocate_tag,
+      .complete_valid(wb_valid), .complete_data(wb_data), .head_data(retire_data), .retire_count,
+      .dispatch_limit, .retire_limit, .redirect_valid, .redirect_pc,
+      .front_flush(branch_front_flush), .backend_flush(branch_backend_flush), .restore
+    );
+  end
+  assign backend_flush = finish || branch_backend_flush;
+  assign branch_fault = (wb_valid[0] && wb_data[0].branch.fault != FAULT_NONE) ||
+                        (wb_valid[1] && wb_data[1].branch.fault != FAULT_NONE);
 
   fetch_unit fetch (
-    .clk, .reset, .stop(fetch_stop), .req_valid(imem_req_valid), .req_ready(imem_req_ready),
+    .clk, .reset, .stop(fetch_stop), .redirect_valid, .redirect_pc,
+    .req_valid(imem_req_valid), .req_ready(imem_req_ready),
     .req_addr(imem_req_addr), .rsp_valid(imem_rsp_valid), .rsp_ready(imem_rsp_ready),
     .rsp_data(imem_rsp_data), .rsp_status(imem_rsp_status),
     .out_valid(fetched_valid), .out_ready(fetched_ready), .out_data(fetched), .idle(fetch_idle)
@@ -60,16 +85,16 @@ module core_pipeline #(
     .clk, .reset, .flush(front_flush), .push_count(id_pop), .in_data(decoded),
     .capacity(id_capacity), .pop_count(dispatch_count), .available(id_available), .out_data(dispatch_data)
   );
-  assign fetch_stop = fetch_stopped ||
+  assign fetch_stop = fetch_stopped || branch_fault ||
     (if_available > 0 && decoded[0].terminal) || (if_available > 1 && decoded[1].terminal);
-  assign front_flush = terminal_dispatch || finish;
+  assign front_flush = terminal_dispatch || finish || branch_front_flush || branch_fault;
   always_ff @(posedge clk) begin
-    if (reset) begin
+    if (reset || redirect_valid) begin
       fetch_stopped <= 0;
       terminal_enqueued <= 0;
     end else begin
       if (fetch_stop) fetch_stopped <= 1;
-      if (terminal_dispatch) terminal_enqueued <= 1;
+      if (terminal_dispatch || branch_fault) terminal_enqueued <= 1;
     end
   end
   always_comb begin
@@ -77,7 +102,9 @@ module core_pipeline #(
     if (int'(offer_count) > ISSUE_WIDTH) offer_count = 2'(ISSUE_WIDTH);
     if (offer_count > rob_capacity) offer_count = rob_capacity;
     if (offer_count > iq_capacity) offer_count = iq_capacity;
-    if (reset || terminal_enqueued || halted || fault) offer_count = 0;
+    if (offer_count > dispatch_limit) offer_count = dispatch_limit;
+    if (reset || terminal_enqueued || halted || fault || backend_flush ||
+        branch_front_flush || branch_fault) offer_count = 0;
     dispatch_count = allow_count;
     enqueue_count = 0;
     terminal_dispatch = 0;
@@ -96,7 +123,7 @@ module core_pipeline #(
   end
   if (OUT_OF_ORDER) begin : out_of_order
     rename_control operands (
-      .clk, .reset, .offer_count, .dispatch_count, .decoded(dispatch_data), .allocate_tag,
+      .clk, .reset, .restore, .offer_count, .dispatch_count, .decoded(dispatch_data), .allocate_tag,
       .allow_count, .prepared, .read_address, .read_value, .complete_valid(wb_valid),
       .complete_data(wb_data), .retire_count, .retire_data
     );
@@ -109,7 +136,7 @@ module core_pipeline #(
     );
   end else begin : in_order
     inorder_operands operands (
-      .clk, .reset, .flush(finish), .offer_count, .dispatch_count, .decoded(dispatch_data),
+      .clk, .reset, .flush(backend_flush), .offer_count, .dispatch_count, .decoded(dispatch_data),
       .allocate_tag, .allow_count, .prepared, .read_address, .read_value, .lookup_tag,
       .lookup_data, .retire_count, .retire_data
     );
@@ -130,38 +157,39 @@ module core_pipeline #(
     .clk, .reset, .read_address, .read_value, .write_valid, .write_address, .write_value
   );
   issue_queue issue_buffer (
-    .clk, .reset, .flush(finish), .enqueue_count, .enqueue_data(prepared), .capacity(iq_capacity),
+    .clk, .reset, .flush(backend_flush), .enqueue_count, .enqueue_data(prepared), .capacity(iq_capacity),
     .remove_mask, .complete_valid(wb_valid), .complete_data(wb_data), .entries(iq_entries)
   );
   assign md_issue_available = md_available &&
     !(ex_valid[0] && is_muldiv(ex_data[0].op)) && !(ex_valid[1] && is_muldiv(ex_data[1].op));
   for (genvar p = 0; p < 2; p++) begin : execute_registers
-    assign issue_ready[p] = stage_ready[p] && p < ISSUE_WIDTH && !finish && !halted && !fault && !reset;
+    assign issue_ready[p] = stage_ready[p] && p < ISSUE_WIDTH && !backend_flush && !halted && !fault && !reset;
     issue2ex issue_execute_register (
-      .clk, .reset, .flush(finish), .in_valid(issue_valid[p]), .in_ready(stage_ready[p]),
+      .clk, .reset, .flush(backend_flush), .in_valid(issue_valid[p]), .in_ready(stage_ready[p]),
       .in_data(issue_data[p]), .out_valid(ex_valid[p]), .out_ready(ex_ready[p]), .out_data(ex_data[p])
     );
     ex2wb execute_writeback_register (
-      .clk, .reset, .flush(finish), .in_valid(result_valid[p]), .in_ready(result_ready[p]),
+      .clk, .reset, .flush(backend_flush), .in_valid(result_valid[p]), .in_ready(result_ready[p]),
       .in_data(result_data[p]), .out_valid(wb_stage_valid[p]), .out_ready(1'b1), .out_data(wb_data[p])
     );
   end
   execution_cluster #(.ALU_COUNT(ISSUE_WIDTH)) execution (
-    .clk, .reset, .flush(finish), .in_valid(ex_valid), .in_ready(ex_ready), .in_data(ex_data),
+    .clk, .reset, .flush(backend_flush), .in_valid(ex_valid), .in_ready(ex_ready), .in_data(ex_data),
     .out_valid(result_valid), .out_ready(result_ready), .out_data(result_data), .muldiv_available(md_available)
   );
-  assign wb_valid = wb_stage_valid & {2{!finish && !halted && !fault}};
+  assign wb_valid = wb_stage_valid & {2{!backend_flush && !halted && !fault && !reset}};
   completion_queue completion (
-    .clk, .reset, .flush(finish), .allocate_count(dispatch_count), .allocate_data,
+    .clk, .reset, .flush(backend_flush), .allocate_count(dispatch_count), .allocate_data,
     .capacity(rob_capacity), .allocate_tag, .complete_valid(wb_valid), .complete_data(wb_data),
     .retire_count, .head_data(retire_data), .head_tag, .lookup_tag, .lookup_data
   );
   retire_unit #(.RETIRE_WIDTH(ISSUE_WIDTH)) retirement (
-    .clk, .reset, .fetch_idle, .head_data(retire_data), .retire_count, .finish,
+    .clk, .reset, .fetch_idle, .head_data(retire_data), .retire_limit, .retire_count, .finish,
     .retire0_valid, .retire1_valid, .retire0_pc, .retire1_pc, .retire0_value, .retire1_value,
     .retire0_rd, .retire1_rd, .halted, .fault, .fault_code
   );
 `ifndef SYNTHESIS
+  initial assert (!BRANCH_AT_RETIRE || OUT_OF_ORDER);
   always_ff @(posedge clk) if (!reset) begin
     assert (!retire1_valid || retire0_valid);
     assert (!(halted && fault));

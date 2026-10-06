@@ -33,6 +33,7 @@ module ooo_scheduler (
         out_valid[p] = 1;
         remove_mask[oldest] = 1;
         out_data[p] = '{meta:entries[oldest].meta, op:entries[oldest].op,
+                       branch_offset:entries[oldest].branch_offset,
                        a:entries[oldest].a.value, b:entries[oldest].b.value};
         if (is_muldiv(entries[oldest].op)) md_used = 1;
       end
