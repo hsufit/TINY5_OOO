@@ -125,10 +125,11 @@ For RTL tests, with Verilator installed:
 ./rtl/run.sh
 ```
 
-This runs all four RTL configurations and the library/branch protocol suites and writes ADD/MUL, queued-ALU,
-queued-ALU-chain, and queued-ALU-hazards waveforms for each (`add_mul*.fst`,
-`queued_alu*.fst`, `queued_alu_chain*.fst`, and `queued_alu_hazards*.fst` in the
-build directory's `rtl/` subdirectory). To run all
+This runs all four RTL configurations and the library/branch protocol suites. It writes
+ADD/MUL and queued-ALU waveforms for the single, dual in-order, and dual out-of-order
+cores. The divide/branch/multiply program also writes a waveform for the speculative
+branch-at-retirement core (`div_branch_mul_dual_ooo_retire.fst`). Waveforms are in the
+build directory's `rtl/` subdirectory. To run all
 regressions from a fresh build directory:
 
 ```sh

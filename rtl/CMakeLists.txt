@@ -107,6 +107,20 @@ verilate(${OOO_WAVEFORM_TARGET} SYSTEMC TRACE_FST TRACE_STRUCTS
 target_include_directories(${OOO_WAVEFORM_TARGET} SYSTEM PRIVATE
     "${VERILATOR_ROOT}/include" "${VERILATOR_ROOT}/include/vltstd")
 
+set(RETIRE_WAVEFORM_TARGET rtl_dual_ooo_retire_waveform)
+set(RETIRE_WAVEFORM_MODEL Vcore_dual_ooo_retire_waveform)
+add_executable(${RETIRE_WAVEFORM_TARGET} sim/add_mul_waveform_test.cpp)
+target_include_directories(${RETIRE_WAVEFORM_TARGET} PRIVATE sim)
+target_link_libraries(${RETIRE_WAVEFORM_TARGET} PRIVATE instruction_memory rv32im_test_support SystemC::systemc)
+target_compile_definitions(${RETIRE_WAVEFORM_TARGET} PRIVATE
+    RTL_MODEL_HEADER="${RETIRE_WAVEFORM_MODEL}.h" RTL_MODEL_CLASS=${RETIRE_WAVEFORM_MODEL} RTL_MODE=3)
+verilate(${RETIRE_WAVEFORM_TARGET} SYSTEMC TRACE_FST TRACE_STRUCTS
+    PREFIX ${RETIRE_WAVEFORM_MODEL} TOP_MODULE core_test_wrapper
+    SOURCES ${TINY5_RTL_SOURCES} ${TINY5_TOP_SOURCES} sim/core_test_wrapper.sv
+    VERILATOR_ARGS ${TINY5_LINT_ARGS} -GOOO_RETIRE=1)
+target_include_directories(${RETIRE_WAVEFORM_TARGET} SYSTEM PRIVATE
+    "${VERILATOR_ROOT}/include" "${VERILATOR_ROOT}/include/vltstd")
+
 if(BUILD_TESTING)
     add_test(NAME rtl_single_inorder COMMAND ${TARGET})
     set_tests_properties(rtl_single_inorder PROPERTIES TIMEOUT 120)
@@ -152,6 +166,18 @@ if(BUILD_TESTING)
     add_test(NAME rtl_dual_ooo_queued_alu_hazards_waveform COMMAND ${OOO_WAVEFORM_TARGET}
         "${CMAKE_CURRENT_BINARY_DIR}/queued_alu_hazards_dual_ooo.fst" queued_alu_hazards)
     set_tests_properties(rtl_dual_ooo_queued_alu_hazards_waveform PROPERTIES TIMEOUT 30)
+    add_test(NAME rtl_div_branch_mul_waveform COMMAND ${WAVEFORM_TARGET}
+        "${CMAKE_CURRENT_BINARY_DIR}/div_branch_mul.fst" div_branch_mul)
+    set_tests_properties(rtl_div_branch_mul_waveform PROPERTIES TIMEOUT 30)
+    add_test(NAME rtl_dual_div_branch_mul_waveform COMMAND ${DUAL_WAVEFORM_TARGET}
+        "${CMAKE_CURRENT_BINARY_DIR}/div_branch_mul_dual.fst" div_branch_mul)
+    set_tests_properties(rtl_dual_div_branch_mul_waveform PROPERTIES TIMEOUT 30)
+    add_test(NAME rtl_dual_ooo_div_branch_mul_waveform COMMAND ${OOO_WAVEFORM_TARGET}
+        "${CMAKE_CURRENT_BINARY_DIR}/div_branch_mul_dual_ooo.fst" div_branch_mul)
+    set_tests_properties(rtl_dual_ooo_div_branch_mul_waveform PROPERTIES TIMEOUT 30)
+    add_test(NAME rtl_dual_ooo_retire_div_branch_mul_waveform COMMAND ${RETIRE_WAVEFORM_TARGET}
+        "${CMAKE_CURRENT_BINARY_DIR}/div_branch_mul_dual_ooo_retire.fst" div_branch_mul)
+    set_tests_properties(rtl_dual_ooo_retire_div_branch_mul_waveform PROPERTIES TIMEOUT 30)
 endif()
 
 if(BUILD_TESTING)
