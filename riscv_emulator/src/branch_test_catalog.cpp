@@ -1,17 +1,38 @@
 #include "test_catalog.h"
+
 #include <utility>
 
 namespace {
+enum Register : unsigned {
+    x0 = 0, x1, x2, x3, x4, x5, x6,
+    x10 = 10, x11,
+};
+
 std::uint32_t addi(unsigned rd, unsigned rs, int immediate) {
     return ((static_cast<std::uint32_t>(immediate) & 4095U) << 20U) |
            (rs << 15U) | (rd << 7U) | 0x13U;
 }
+
+std::uint32_t reg(unsigned funct7, unsigned funct3, unsigned rd, unsigned a, unsigned b) {
+    return (funct7 << 25U) | (b << 20U) | (a << 15U) |
+           (funct3 << 12U) | (rd << 7U) | 0x33U;
+}
+
 std::uint32_t branch(unsigned condition, unsigned a, unsigned b, int offset) {
     const auto bits = static_cast<std::uint32_t>(offset);
     return ((bits & 0x1000U) << 19U) | ((bits & 0x7e0U) << 20U) | (b << 20U) |
            (a << 15U) | (condition << 12U) | ((bits & 0x1eU) << 7U) |
            ((bits & 0x800U) >> 4U) | 0x63U;
 }
+
+std::uint32_t add(unsigned rd, unsigned a, unsigned b) { return reg(0, 0, rd, a, b); }
+std::uint32_t mul(unsigned rd, unsigned a, unsigned b) { return reg(1, 0, rd, a, b); }
+std::uint32_t div(unsigned rd, unsigned a, unsigned b) { return reg(1, 4, rd, a, b); }
+
+// Branch offsets are in bytes, relative to the branch instruction's PC.
+std::uint32_t beq(unsigned a, unsigned b, int offset) { return branch(0, a, b, offset); }
+std::uint32_t bne(unsigned a, unsigned b, int offset) { return branch(1, a, b, offset); }
+
 ProgramTest program(std::string name, const std::vector<std::uint32_t>& words,
                     std::vector<std::uint32_t> pcs, std::vector<RegisterExpectation> registers = {},
                     CpuFaultCode fault = CpuFaultCode::NONE) {
@@ -23,10 +44,114 @@ ProgramTest program(std::string name, const std::vector<std::uint32_t>& words,
     return {std::move(name), std::move(bytes), std::move(registers), count, std::move(pcs),
             fault == CpuFaultCode::NONE ? ExpectedTermination::Halt : ExpectedTermination::Fault, fault};
 }
-} // namespace
+}  // namespace
+
+const ProgramTest& rv32im_branch_slow_not_taken_speculation_test() {
+    static const ProgramTest test = program(
+        "branch slow not taken useful speculation",
+        {
+            addi(x10, x0, 80),   // PC 0:  dividend
+            addi(x11, x0, 2),    // PC 4:  divisor
+            div(x1, x10, x11),   // PC 8:  x1 = 40
+            beq(x1, x0, 20),     // PC 12: done at PC 32; not taken
+            addi(x2, x0, 7),     // PC 16: useful independent work
+            addi(x3, x0, 9),     // PC 20: useful independent work
+            mul(x4, x2, x3),     // PC 24: x4 = 63
+            add(x5, x4, x2),     // PC 28: x5 = 70
+            add(x6, x5, x0),     // PC 32 (done): x6 = 70
+        },
+        {0, 4, 8, 12, 16, 20, 24, 28, 32},
+        {{x1, 40U}, {x2, 7U}, {x3, 9U}, {x4, 63U}, {x5, 70U}, {x6, 70U},
+         {x10, 80U}, {x11, 2U}});
+    return test;
+}
+
+const ProgramTest& rv32im_branch_independent_taken_redirect_test() {
+    static const ProgramTest test = program(
+        "branch independent taken early redirect",
+        {
+            addi(x10, x0, 80),  // PC 0
+            addi(x11, x0, 2),   // PC 4
+            div(x1, x10, x11),  // PC 8:  older DIV, x1 = 40
+            beq(x0, x0, 12),    // PC 12: target at PC 24; always taken
+            addi(x1, x0, 99),   // PC 16: skipped
+            div(x2, x10, x11),  // PC 20: skipped
+            mul(x3, x10, x11),  // PC 24 (target): x3 = 160
+        },
+        {0, 4, 8, 12, 24},
+        {{x1, 40U}, {x2, 0U}, {x3, 160U}, {x10, 80U}, {x11, 2U}});
+    return test;
+}
+
+const ProgramTest& rv32im_branch_taken_bypasses_dependency_test() {
+    static const ProgramTest test = program(
+        "branch taken bypasses stalled add",
+        {
+            addi(x10, x0, 80),  // PC 0
+            addi(x11, x0, 2),   // PC 4
+            div(x1, x10, x11),  // PC 8:  x1 = 40
+            add(x2, x1, x1),    // PC 12: waits for DIV; x2 = 80
+            beq(x0, x0, 8),     // PC 16: ready before the ADD; target at PC 24
+            addi(x2, x0, 99),   // PC 20: skipped
+            mul(x3, x10, x11),  // PC 24 (target): x3 = 160
+        },
+        {0, 4, 8, 12, 16, 24},
+        {{x1, 40U}, {x2, 80U}, {x3, 160U}, {x10, 80U}, {x11, 2U}});
+    return test;
+}
+
+const ProgramTest& rv32im_branch_taken_discards_wrong_path_test() {
+    static const ProgramTest test = program(
+        "branch taken discards wrong-path work",
+        {
+            addi(x10, x0, 80),  // PC 0
+            addi(x11, x0, 2),   // PC 4
+            div(x1, x10, x11),  // PC 8:  x1 = 40
+            bne(x1, x0, 12),    // PC 12: waits for DIV; target at PC 24
+            div(x2, x10, x11),  // PC 16: wrong-path DIV
+            addi(x1, x0, 99),   // PC 20: wrong-path renamed writer
+            add(x3, x1, x0),    // PC 24 (target): x3 = 40
+        },
+        {0, 4, 8, 12, 24},
+        {{x1, 40U}, {x2, 0U}, {x3, 40U}, {x10, 80U}, {x11, 2U}});
+    return test;
+}
+
+const ProgramTest& rv32im_branch_backward_loop_test() {
+    static const ProgramTest test = program(
+        "branch backward loop not-taken assumption",
+        {
+            addi(x1, x0, 3),   // PC 0:  loop count
+            addi(x1, x1, -1),  // PC 4 (loop): 3 -> 2 -> 1 -> 0
+            bne(x1, x0, -4),   // PC 8:  taken twice, then falls through to PC 12
+            addi(x2, x0, 7),   // PC 12: executed after the loop
+        },
+        {0, 4, 8, 4, 8, 4, 8, 12}, {{x1, 0U}, {x2, 7U}});
+    return test;
+}
+
+const ProgramTest& rv32im_branch_fast_not_taken_no_gain_test() {
+    static const ProgramTest test = program(
+        "branch fast not taken no speculation gain",
+        {
+            bne(x0, x0, 12),  // PC 0:  never taken; done at PC 12
+            addi(x2, x0, 7),   // PC 4
+            addi(x3, x0, 9),   // PC 8
+            add(x4, x2, x3),   // PC 12 (done): x4 = 16
+        },
+        {0, 4, 8, 12}, {{x2, 7U}, {x3, 9U}, {x4, 16U}});
+    return test;
+}
 
 std::vector<ProgramTest> branch_test_catalog() {
     std::vector<ProgramTest> tests;
+    tests.insert(tests.end(), {
+        rv32im_branch_slow_not_taken_speculation_test(),
+        rv32im_branch_independent_taken_redirect_test(),
+        rv32im_branch_taken_bypasses_dependency_test(),
+        rv32im_branch_taken_discards_wrong_path_test(),
+        rv32im_branch_backward_loop_test(),
+        rv32im_branch_fast_not_taken_no_gain_test()});
     struct Comparison { unsigned condition; int a, b; bool taken; };
     for (const auto c : {
         Comparison{0, 1, 1, true}, {0, 1, -1, false}, {1, 1, -1, true}, {1, 1, 1, false},

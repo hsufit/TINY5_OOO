@@ -9,6 +9,7 @@
 #include <verilated.h>
 #include <verilated_fst_sc.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <string>
@@ -178,28 +179,107 @@ private:
 int sc_main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
     Verilated::traceEverOn(true);
+    struct BranchCase {
+        const char* scenario;
+        const ProgramTest* program;
+        std::vector<RetirementEvent> expected;  // {PC, destination register, value}
+    };
+    const std::vector<BranchCase> branch_cases{
+        {
+            "branch_slow_not_taken_speculation",
+            &rv32im_branch_slow_not_taken_speculation_test(),
+            {
+                {0, 10, 80},
+                {4, 11, 2},
+                {8, 1, 40},
+                {12, 0, 0},
+                {16, 2, 7},
+                {20, 3, 9},
+                {24, 4, 63},
+                {28, 5, 70},
+                {32, 6, 70},
+            },
+        },
+        {
+            "branch_independent_taken_redirect",
+            &rv32im_branch_independent_taken_redirect_test(),
+            {
+                {0, 10, 80},
+                {4, 11, 2},
+                {8, 1, 40},
+                {12, 0, 0},
+                {24, 3, 160},
+            },
+        },
+        {
+            "branch_taken_bypasses_dependency",
+            &rv32im_branch_taken_bypasses_dependency_test(),
+            {
+                {0, 10, 80},
+                {4, 11, 2},
+                {8, 1, 40},
+                {12, 2, 80},
+                {16, 0, 0},
+                {24, 3, 160},
+            },
+        },
+        {
+            "branch_taken_discards_wrong_path",
+            &rv32im_branch_taken_discards_wrong_path_test(),
+            {
+                {0, 10, 80},
+                {4, 11, 2},
+                {8, 1, 40},
+                {12, 0, 0},
+                {24, 3, 40},
+            },
+        },
+        {
+            "branch_backward_loop",
+            &rv32im_branch_backward_loop_test(),
+            {
+                {0, 1, 3},
+                {4, 1, 2},
+                {8, 0, 0},
+                {4, 1, 1},
+                {8, 0, 0},
+                {4, 1, 0},
+                {8, 0, 0},
+                {12, 2, 7},
+            },
+        },
+        {
+            "branch_fast_not_taken_no_gain",
+            &rv32im_branch_fast_not_taken_no_gain_test(),
+            {
+                {0, 0, 0},
+                {4, 2, 7},
+                {8, 3, 9},
+                {12, 4, 16},
+            },
+        },
+    };
     const std::string scenario = argc == 3 ? argv[2] : "";
+    const auto branch_case = std::find_if(branch_cases.begin(), branch_cases.end(),
+        [&](const BranchCase& entry) { return scenario == entry.scenario; });
     if (argc > 3 || (!scenario.empty() && scenario != "queued_alu" &&
                      scenario != "queued_alu_chain" && scenario != "queued_alu_hazards" &&
-                     scenario != "div_branch_mul")) {
+                     branch_case == branch_cases.end())) {
         std::cerr << "Usage: " << argv[0]
-                  << " [waveform.fst [queued_alu|queued_alu_chain|queued_alu_hazards|div_branch_mul]]\n";
+                  << " [waveform.fst [queued_alu|queued_alu_chain|queued_alu_hazards|branch_*]]\n";
         return 2;
     }
     const std::string waveform = argc > 1 ? argv[1] : "add_mul.fst";
     const bool queued_alu = scenario == "queued_alu";
     const bool queued_alu_chain = scenario == "queued_alu_chain";
     const bool queued_alu_hazards = scenario == "queued_alu_hazards";
-    const bool div_branch_mul = scenario == "div_branch_mul";
-    const ProgramTest& program = div_branch_mul ? rv32im_div_branch_mul_test()
+    const ProgramTest& program = branch_case != branch_cases.end() ? *branch_case->program
                                 : queued_alu_hazards ? rv32im_queued_alu_hazards_test()
                                 : queued_alu_chain ? rv32im_queued_alu_chain_behind_multiply_test()
                                 : queued_alu ? rv32im_queued_alu_behind_multiply_test()
                                              : rv32im_add_mul_test();
-    const std::vector<RetirementEvent> expected = div_branch_mul
-        ? std::vector<RetirementEvent>{{0, 10, 80}, {4, 11, 2}, {8, 1, 40},
-                                       {12, 0, 0}, {16, 2, 7}, {20, 3, 9},
-                                       {24, 4, 63}, {28, 5, 70}, {32, 6, 70}}
+    const std::vector<RetirementEvent> expected = branch_case != branch_cases.end()
+        ? branch_case->expected
         : queued_alu_hazards
         ? std::vector<RetirementEvent>{{0, 1, 6}, {4, 2, 7}, {8, 3, 42}, {12, 4, 42},
                                        {16, 5, 43}, {20, 5, 9}, {24, 6, 9}, {28, 7, 1}}

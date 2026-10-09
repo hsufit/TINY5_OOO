@@ -31,6 +31,11 @@ const ProgramTest& rv32im_add_mul_test();
 const ProgramTest& rv32im_queued_alu_behind_multiply_test();
 const ProgramTest& rv32im_queued_alu_chain_behind_multiply_test();
 const ProgramTest& rv32im_queued_alu_hazards_test();
-const ProgramTest& rv32im_div_branch_mul_test();
+const ProgramTest& rv32im_branch_slow_not_taken_speculation_test();
+const ProgramTest& rv32im_branch_independent_taken_redirect_test();
+const ProgramTest& rv32im_branch_taken_bypasses_dependency_test();
+const ProgramTest& rv32im_branch_taken_discards_wrong_path_test();
+const ProgramTest& rv32im_branch_backward_loop_test();
+const ProgramTest& rv32im_branch_fast_not_taken_no_gain_test();
 
 #endif

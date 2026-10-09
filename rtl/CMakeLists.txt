@@ -166,18 +166,28 @@ if(BUILD_TESTING)
     add_test(NAME rtl_dual_ooo_queued_alu_hazards_waveform COMMAND ${OOO_WAVEFORM_TARGET}
         "${CMAKE_CURRENT_BINARY_DIR}/queued_alu_hazards_dual_ooo.fst" queued_alu_hazards)
     set_tests_properties(rtl_dual_ooo_queued_alu_hazards_waveform PROPERTIES TIMEOUT 30)
-    add_test(NAME rtl_div_branch_mul_waveform COMMAND ${WAVEFORM_TARGET}
-        "${CMAKE_CURRENT_BINARY_DIR}/div_branch_mul.fst" div_branch_mul)
-    set_tests_properties(rtl_div_branch_mul_waveform PROPERTIES TIMEOUT 30)
-    add_test(NAME rtl_dual_div_branch_mul_waveform COMMAND ${DUAL_WAVEFORM_TARGET}
-        "${CMAKE_CURRENT_BINARY_DIR}/div_branch_mul_dual.fst" div_branch_mul)
-    set_tests_properties(rtl_dual_div_branch_mul_waveform PROPERTIES TIMEOUT 30)
-    add_test(NAME rtl_dual_ooo_div_branch_mul_waveform COMMAND ${OOO_WAVEFORM_TARGET}
-        "${CMAKE_CURRENT_BINARY_DIR}/div_branch_mul_dual_ooo.fst" div_branch_mul)
-    set_tests_properties(rtl_dual_ooo_div_branch_mul_waveform PROPERTIES TIMEOUT 30)
-    add_test(NAME rtl_dual_ooo_retire_div_branch_mul_waveform COMMAND ${RETIRE_WAVEFORM_TARGET}
-        "${CMAKE_CURRENT_BINARY_DIR}/div_branch_mul_dual_ooo_retire.fst" div_branch_mul)
-    set_tests_properties(rtl_dual_ooo_retire_div_branch_mul_waveform PROPERTIES TIMEOUT 30)
+    foreach(BRANCH_SCENARIO IN ITEMS
+        branch_slow_not_taken_speculation
+        branch_independent_taken_redirect
+        branch_taken_bypasses_dependency
+        branch_taken_discards_wrong_path
+        branch_backward_loop
+        branch_fast_not_taken_no_gain)
+        add_test(NAME rtl_${BRANCH_SCENARIO}_waveform COMMAND ${WAVEFORM_TARGET}
+            "${CMAKE_CURRENT_BINARY_DIR}/${BRANCH_SCENARIO}.fst" ${BRANCH_SCENARIO})
+        add_test(NAME rtl_dual_${BRANCH_SCENARIO}_waveform COMMAND ${DUAL_WAVEFORM_TARGET}
+            "${CMAKE_CURRENT_BINARY_DIR}/${BRANCH_SCENARIO}_dual.fst" ${BRANCH_SCENARIO})
+        add_test(NAME rtl_dual_ooo_${BRANCH_SCENARIO}_waveform COMMAND ${OOO_WAVEFORM_TARGET}
+            "${CMAKE_CURRENT_BINARY_DIR}/${BRANCH_SCENARIO}_dual_ooo.fst" ${BRANCH_SCENARIO})
+        add_test(NAME rtl_dual_ooo_retire_${BRANCH_SCENARIO}_waveform COMMAND ${RETIRE_WAVEFORM_TARGET}
+            "${CMAKE_CURRENT_BINARY_DIR}/${BRANCH_SCENARIO}_dual_ooo_retire.fst" ${BRANCH_SCENARIO})
+        set_tests_properties(
+            rtl_${BRANCH_SCENARIO}_waveform
+            rtl_dual_${BRANCH_SCENARIO}_waveform
+            rtl_dual_ooo_${BRANCH_SCENARIO}_waveform
+            rtl_dual_ooo_retire_${BRANCH_SCENARIO}_waveform
+            PROPERTIES TIMEOUT 30)
+    endforeach()
 endif()
 
 if(BUILD_TESTING)

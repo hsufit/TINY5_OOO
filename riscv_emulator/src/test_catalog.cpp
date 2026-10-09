@@ -105,30 +105,10 @@ const ProgramTest& rv32im_queued_alu_hazards_test() {
     return test;
 }
 
-const ProgramTest& rv32im_div_branch_mul_test() {
-    static const ProgramTest test = success(
-        "divide-dependent branch with multiply",
-        {
-            0x13, 0x05, 0x00, 0x05,  // addi x10,x0,80
-            0x93, 0x05, 0x20, 0x00,  // addi x11,x0,2
-            0xb3, 0x40, 0xb5, 0x02,  // div  x1,x10,x11: x1=40
-            0x63, 0x8a, 0x00, 0x00,  // beq  x1,x0,done: not taken, done=PC32
-            0x13, 0x01, 0x70, 0x00,  // addi x2,x0,7
-            0x93, 0x01, 0x90, 0x00,  // addi x3,x0,9
-            0x33, 0x02, 0x31, 0x02,  // mul  x4,x2,x3: x4=63
-            0xb3, 0x02, 0x22, 0x00,  // add  x5,x4,x2: x5=70
-            0x33, 0x83, 0x02, 0x00,  // done: add x6,x5,x0: x6=70
-        },
-        {{1, 40U}, {2, 7U}, {3, 9U}, {4, 63U}, {5, 70U}, {6, 70U},
-         {10, 80U}, {11, 2U}});
-    return test;
-}
-
 const std::vector<ProgramTest>& rv32im_test_catalog() {
     static const std::vector<ProgramTest> tests = [] {
         std::vector<ProgramTest> result{
         rv32im_add_mul_test(),
-        rv32im_div_branch_mul_test(),
         success(
             "RV32I register arithmetic",
             {
