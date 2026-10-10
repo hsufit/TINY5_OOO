@@ -32,6 +32,7 @@ const ProgramTest& rv32im_queued_alu_behind_multiply_test();
 const ProgramTest& rv32im_queued_alu_chain_behind_multiply_test();
 const ProgramTest& rv32im_queued_alu_hazards_test();
 const ProgramTest& rv32im_branch_slow_not_taken_speculation_test();
+const ProgramTest& rv32im_branch_not_taken_divide_alu_chains_test();
 const ProgramTest& rv32im_branch_independent_taken_redirect_test();
 const ProgramTest& rv32im_branch_taken_bypasses_dependency_test();
 const ProgramTest& rv32im_branch_taken_discards_wrong_path_test();

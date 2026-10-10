@@ -4,8 +4,9 @@
 
 namespace {
 enum Register : unsigned {
-    x0 = 0, x1, x2, x3, x4, x5, x6,
-    x10 = 10, x11,
+    x0 = 0, x1, x2, x3, x4, x5, x6, x7, x8, x9,
+    x10, x11, x12, x13, x14,
+    x20 = 20,
 };
 
 std::uint32_t addi(unsigned rd, unsigned rs, int immediate) {
@@ -63,6 +64,36 @@ const ProgramTest& rv32im_branch_slow_not_taken_speculation_test() {
         {0, 4, 8, 12, 16, 20, 24, 28, 32},
         {{x1, 40U}, {x2, 7U}, {x3, 9U}, {x4, 63U}, {x5, 70U}, {x6, 70U},
          {x10, 80U}, {x11, 2U}});
+    return test;
+}
+
+const ProgramTest& rv32im_branch_not_taken_divide_alu_chains_test() {
+    static const ProgramTest test = program(
+        "branch not taken divide and ALU chains",
+        {
+            addi(x10, x0, 120),  // PC 0:  initial dividend
+            addi(x11, x0, 3),    // PC 4:  initial divisor
+            div(x1, x10, x11),   // PC 8:  x1 = 40
+            div(x2, x1, x11),    // PC 12: waits for x1; x2 = 13
+            add(x3, x2, x2),     // PC 16: waits for x2; x3 = 26
+            beq(x1, x0, 48),    // PC 20: done at PC 68; not taken
+            addi(x4, x0, 7),    // PC 24: independent younger chain
+            addi(x5, x4, 1),    // PC 28: x5 = 8
+            addi(x6, x5, 1),    // PC 32: x6 = 9
+            addi(x7, x6, 1),    // PC 36: x7 = 10
+            addi(x8, x7, 1),    // PC 40: x8 = 11
+            addi(x9, x8, 1),    // PC 44: x9 = 12
+            addi(x10, x9, 1),   // PC 48: x10 = 13
+            addi(x11, x10, 1),  // PC 52: x11 = 14
+            addi(x12, x11, 1),  // PC 56: x12 = 15
+            addi(x13, x12, 1),  // PC 60: x13 = 16
+            addi(x14, x13, 1),  // PC 64: x14 = 17
+            add(x20, x14, x3),  // PC 68 (done): x20 = 43
+        },
+        {0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 68},
+        {{x1, 40U}, {x2, 13U}, {x3, 26U}, {x4, 7U}, {x5, 8U}, {x6, 9U},
+         {x7, 10U}, {x8, 11U}, {x9, 12U}, {x10, 13U}, {x11, 14U}, {x12, 15U},
+         {x13, 16U}, {x14, 17U}, {x20, 43U}});
     return test;
 }
 
@@ -147,6 +178,7 @@ std::vector<ProgramTest> branch_test_catalog() {
     std::vector<ProgramTest> tests;
     tests.insert(tests.end(), {
         rv32im_branch_slow_not_taken_speculation_test(),
+        rv32im_branch_not_taken_divide_alu_chains_test(),
         rv32im_branch_independent_taken_redirect_test(),
         rv32im_branch_taken_bypasses_dependency_test(),
         rv32im_branch_taken_discards_wrong_path_test(),

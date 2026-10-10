@@ -127,9 +127,10 @@ For RTL tests, with Verilator installed:
 
 This runs all four RTL configurations and the library/branch protocol suites. It writes
 ADD/MUL and queued-ALU waveforms for the single, dual in-order, and dual out-of-order
-cores. Six `branch_*` programs cover slow and fast not-taken branches, early taken
-redirects, a branch bypassing an older stalled add, wrong-path recovery, and a
-backward loop. Each writes four waveforms, including one for the speculative
+cores. Seven `branch_*` programs cover slow and fast not-taken branches, two
+dependent divides alongside a younger ALU chain, early taken redirects, a branch
+bypassing an older stalled add, wrong-path recovery, and a backward loop. Each
+writes four waveforms, including one for the speculative
 branch-at-retirement core (`*_dual_ooo_retire.fst`). Waveforms are in the build
 directory's `rtl/` subdirectory. To run all
 regressions from a fresh build directory:

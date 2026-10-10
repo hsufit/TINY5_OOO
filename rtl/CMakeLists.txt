@@ -168,6 +168,7 @@ if(BUILD_TESTING)
     set_tests_properties(rtl_dual_ooo_queued_alu_hazards_waveform PROPERTIES TIMEOUT 30)
     foreach(BRANCH_SCENARIO IN ITEMS
         branch_slow_not_taken_speculation
+        branch_not_taken_divide_alu_chains
         branch_independent_taken_redirect
         branch_taken_bypasses_dependency
         branch_taken_discards_wrong_path

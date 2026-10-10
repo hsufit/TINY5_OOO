@@ -46,7 +46,8 @@ printf 'Waveforms: %s %s %s\n' "$build_dir/rtl/add_mul.fst" "$build_dir/rtl/add_
 printf '           %s %s %s\n' "$build_dir/rtl/queued_alu.fst" "$build_dir/rtl/queued_alu_dual.fst" "$build_dir/rtl/queued_alu_dual_ooo.fst"
 printf '           %s %s %s\n' "$build_dir/rtl/queued_alu_chain.fst" "$build_dir/rtl/queued_alu_chain_dual.fst" "$build_dir/rtl/queued_alu_chain_dual_ooo.fst"
 printf '           %s %s %s\n' "$build_dir/rtl/queued_alu_hazards.fst" "$build_dir/rtl/queued_alu_hazards_dual.fst" "$build_dir/rtl/queued_alu_hazards_dual_ooo.fst"
-for scenario in branch_slow_not_taken_speculation branch_independent_taken_redirect \
+for scenario in branch_slow_not_taken_speculation branch_not_taken_divide_alu_chains \
+    branch_independent_taken_redirect \
     branch_taken_bypasses_dependency branch_taken_discards_wrong_path \
     branch_backward_loop branch_fast_not_taken_no_gain; do
     printf '           %s %s %s %s\n' "$build_dir/rtl/$scenario.fst" \
