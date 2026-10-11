@@ -24,6 +24,7 @@ class AddMulWaveformTestbench : public sc_core::sc_module {
 public:
     sc_core::sc_clock clock{"clock", 10, sc_core::SC_NS};
     sc_signal<bool> reset{"reset"};
+    sc_signal<bool> irq_external{"irq_external"};
     sc_signal<bool> req_valid{"req_valid"}, req_ready{"req_ready"};
     sc_signal<bool> rsp_valid{"rsp_valid"}, rsp_ready{"rsp_ready"};
     sc_signal<sc_uint<32>> req_addr{"req_addr"}, rsp_data{"rsp_data"};
@@ -63,6 +64,7 @@ public:
         : sc_module(name), program_(program), expected_(std::move(expected)) {
         cpu.clk(clock);
         cpu.reset(reset);
+        cpu.irq_external(irq_external);
         cpu.imem_req_valid(req_valid);
         cpu.imem_req_ready(req_ready);
         cpu.imem_req_addr(req_addr);

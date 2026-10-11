@@ -1,5 +1,5 @@
-module tiny5_dual_ooo_retire (
-  input logic clk, reset,
+module tiny5_dual_ooo_retire #(parameter bit ENABLE_TRAPS = 0) (
+  input logic clk, reset, irq_external,
   output logic imem_req_valid,
   input logic imem_req_ready,
   output logic [31:0] imem_req_addr,
@@ -13,5 +13,6 @@ module tiny5_dual_ooo_retire (
   output logic halted, fault,
   output logic [1:0] fault_code
 );
-  core_pipeline #(.ISSUE_WIDTH(2), .OUT_OF_ORDER(1), .BRANCH_AT_RETIRE(1)) core (.*);
+  core_pipeline #(.ISSUE_WIDTH(2), .OUT_OF_ORDER(1), .BRANCH_AT_RETIRE(1),
+    .ENABLE_TRAPS(ENABLE_TRAPS)) core (.*);
 endmodule

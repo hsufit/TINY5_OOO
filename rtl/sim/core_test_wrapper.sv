@@ -1,7 +1,8 @@
 module core_test_wrapper #(
-  parameter bit DUAL_INORDER = 0, DUAL_OOO = 0, OOO_RETIRE = 0
+  parameter bit DUAL_INORDER = 0, DUAL_OOO = 0, OOO_RETIRE = 0,
+  parameter bit ENABLE_TRAPS = 0
 ) (
-  input logic clk, reset,
+  input logic clk, reset, irq_external,
   output logic imem_req_valid,
   input logic imem_req_ready,
   output logic [31:0] imem_req_addr,
@@ -24,7 +25,7 @@ module core_test_wrapper #(
 );
   localparam int MODE = OOO_RETIRE ? 3 : DUAL_OOO ? 2 : DUAL_INORDER ? 1 : 0;
   if (MODE == 0) begin : single
-    tiny5_single_inorder dut (.*);
+    tiny5_single_inorder #(.ENABLE_TRAPS(ENABLE_TRAPS)) dut (.*);
     assign debug_issue_valid = dut.core.issue_valid;
     assign debug_issue_pc0 = dut.core.issue_data[0].meta.pc;
     assign debug_issue_pc1 = dut.core.issue_data[1].meta.pc;
@@ -48,12 +49,12 @@ module core_test_wrapper #(
       dut.core.wb_valid[0] && dut.core.wb_data[0].branch.valid};
     assign debug_dispatch_limit = dut.core.dispatch_limit;
     assign debug_redirect = dut.core.redirect_valid;
-    assign debug_backend_flush = dut.core.branch_backend_flush;
-    assign debug_cancel_muldiv = dut.core.branch_backend_flush && dut.core.execution.muldiv.busy;
+    assign debug_backend_flush = dut.core.backend_flush;
+    assign debug_cancel_muldiv = dut.core.backend_flush && dut.core.execution.muldiv.busy;
     assign debug_frontend_full = !dut.core.fetched_ready;
   end
   else if (MODE == 1) begin : dual
-    tiny5_dual_inorder dut (.*);
+    tiny5_dual_inorder #(.ENABLE_TRAPS(ENABLE_TRAPS)) dut (.*);
     assign debug_issue_valid = dut.core.issue_valid;
     assign debug_issue_pc0 = dut.core.issue_data[0].meta.pc;
     assign debug_issue_pc1 = dut.core.issue_data[1].meta.pc;
@@ -77,12 +78,12 @@ module core_test_wrapper #(
       dut.core.wb_valid[0] && dut.core.wb_data[0].branch.valid};
     assign debug_dispatch_limit = dut.core.dispatch_limit;
     assign debug_redirect = dut.core.redirect_valid;
-    assign debug_backend_flush = dut.core.branch_backend_flush;
-    assign debug_cancel_muldiv = dut.core.branch_backend_flush && dut.core.execution.muldiv.busy;
+    assign debug_backend_flush = dut.core.backend_flush;
+    assign debug_cancel_muldiv = dut.core.backend_flush && dut.core.execution.muldiv.busy;
     assign debug_frontend_full = !dut.core.fetched_ready;
   end
   else if (MODE == 2) begin : ooo
-    tiny5_dual_ooo dut (.*);
+    tiny5_dual_ooo #(.ENABLE_TRAPS(ENABLE_TRAPS)) dut (.*);
     assign debug_issue_valid = dut.core.issue_valid;
     assign debug_issue_pc0 = dut.core.issue_data[0].meta.pc;
     assign debug_issue_pc1 = dut.core.issue_data[1].meta.pc;
@@ -106,11 +107,11 @@ module core_test_wrapper #(
       dut.core.wb_valid[0] && dut.core.wb_data[0].branch.valid};
     assign debug_dispatch_limit = dut.core.dispatch_limit;
     assign debug_redirect = dut.core.redirect_valid;
-    assign debug_backend_flush = dut.core.branch_backend_flush;
-    assign debug_cancel_muldiv = dut.core.branch_backend_flush && dut.core.execution.muldiv.busy;
+    assign debug_backend_flush = dut.core.backend_flush;
+    assign debug_cancel_muldiv = dut.core.backend_flush && dut.core.execution.muldiv.busy;
     assign debug_frontend_full = !dut.core.fetched_ready;
   end  else if (MODE == 3) begin : ooo_retire
-    tiny5_dual_ooo_retire dut (.*);
+    tiny5_dual_ooo_retire #(.ENABLE_TRAPS(ENABLE_TRAPS)) dut (.*);
     assign debug_issue_valid = dut.core.issue_valid;
     assign debug_issue_pc0 = dut.core.issue_data[0].meta.pc;
     assign debug_issue_pc1 = dut.core.issue_data[1].meta.pc;
@@ -134,8 +135,8 @@ module core_test_wrapper #(
       dut.core.wb_valid[0] && dut.core.wb_data[0].branch.valid};
     assign debug_dispatch_limit = dut.core.dispatch_limit;
     assign debug_redirect = dut.core.redirect_valid;
-    assign debug_backend_flush = dut.core.branch_backend_flush;
-    assign debug_cancel_muldiv = dut.core.branch_backend_flush && dut.core.execution.muldiv.busy;
+    assign debug_backend_flush = dut.core.backend_flush;
+    assign debug_cancel_muldiv = dut.core.backend_flush && dut.core.execution.muldiv.busy;
     assign debug_frontend_full = !dut.core.fetched_ready;
   end
 endmodule

@@ -121,7 +121,30 @@ verilate(${RETIRE_WAVEFORM_TARGET} SYSTEMC TRACE_FST TRACE_STRUCTS
 target_include_directories(${RETIRE_WAVEFORM_TARGET} SYSTEM PRIVATE
     "${VERILATOR_ROOT}/include" "${VERILATOR_ROOT}/include/vltstd")
 
+function(add_trap_test target model mode)
+    add_executable(${target} sim/core_tests.cpp)
+    target_include_directories(${target} PRIVATE sim)
+    target_link_libraries(${target} PRIVATE
+        rv32im_cpu rv32im_reference_cpu instruction_memory rv32im_test_support SystemC::systemc)
+    target_compile_definitions(${target} PRIVATE
+        RTL_MODEL_HEADER="${model}.h" RTL_MODEL_CLASS=${model} RTL_MODE=${mode} RTL_TRAPS=1)
+    verilate(${target} SYSTEMC TRACE_FST TRACE_STRUCTS PREFIX ${model} TOP_MODULE core_test_wrapper
+        SOURCES ${TINY5_RTL_SOURCES} ${TINY5_TOP_SOURCES} sim/core_test_wrapper.sv
+        VERILATOR_ARGS ${TINY5_LINT_ARGS} -GENABLE_TRAPS=1 ${ARGN})
+    target_include_directories(${target} SYSTEM PRIVATE
+        "${VERILATOR_ROOT}/include" "${VERILATOR_ROOT}/include/vltstd")
+endfunction()
+add_trap_test(rtl_traps_single Vcore_traps_single 0)
+add_trap_test(rtl_traps_dual Vcore_traps_dual 1 -GDUAL_INORDER=1)
+add_trap_test(rtl_traps_ooo Vcore_traps_ooo 2 -GDUAL_OOO=1)
+add_trap_test(rtl_traps_ooo_retire Vcore_traps_ooo_retire 3 -GOOO_RETIRE=1)
+
 if(BUILD_TESTING)
+    foreach(TRAP_MODE IN ITEMS single dual ooo ooo_retire)
+        add_test(NAME rtl_traps_${TRAP_MODE} COMMAND rtl_traps_${TRAP_MODE}
+            "${CMAKE_CURRENT_BINARY_DIR}/traps_${TRAP_MODE}.fst")
+        set_tests_properties(rtl_traps_${TRAP_MODE} PROPERTIES TIMEOUT 120)
+    endforeach()
     add_test(NAME rtl_single_inorder COMMAND ${TARGET})
     set_tests_properties(rtl_single_inorder PROPERTIES TIMEOUT 120)
     add_test(NAME rtl_dual_inorder COMMAND ${DUAL_TARGET})

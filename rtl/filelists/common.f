@@ -16,6 +16,7 @@ rtl/lib/register_file.sv
 rtl/lib/operand_select.sv
 rtl/lib/completion_queue.sv
 rtl/lib/retire_unit.sv
+rtl/lib/machine_csr.sv
 rtl/lib/issue_queue.sv
 rtl/control/inorder_scheduler.sv
 rtl/control/ooo_scheduler.sv

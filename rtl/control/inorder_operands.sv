@@ -52,7 +52,7 @@ module inorder_operands (
       prepared[p].a = selected_operands[2*p];
       prepared[p].b = selected_operands[2*p+1];
       if (p < int'(offer_count) && !blocked) begin
-        if (decoded[p].terminal) begin
+        if (decoded[p].terminal || decoded[p].serial) begin
           allow_count = allow_count + 1'b1;
           blocked = 1;
         end else if (decoded[p].rd != 0 && candidate_busy[decoded[p].rd]) blocked = 1;
@@ -69,9 +69,9 @@ module inorder_operands (
       for (int r = 0; r < 32; r++) producer[r] <= 0;
     end else begin
       for (int p = 0; p < 2; p++) begin
-        if (p < int'(retire_count) && retire_data[p].meta.rd != 0)
+        if (p < int'(retire_count) && !retire_data[p].serial && retire_data[p].meta.rd != 0)
           busy[retire_data[p].meta.rd] <= 0;
-        if (p < int'(dispatch_count) && !decoded[p].terminal && decoded[p].rd != 0) begin
+        if (p < int'(dispatch_count) && !decoded[p].terminal && !decoded[p].serial && decoded[p].rd != 0) begin
           busy[decoded[p].rd] <= 1;
           producer[decoded[p].rd] <= allocate_tag[p];
         end

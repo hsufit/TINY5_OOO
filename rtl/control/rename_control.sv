@@ -10,7 +10,10 @@ module rename_control (
   input logic [1:0] complete_valid,
   input tiny5_pkg::result_t complete_data [2],
   input logic [1:0] retire_count,
-  input tiny5_pkg::rob_entry_t retire_data [2]
+  input tiny5_pkg::rob_entry_t retire_data [2],
+  input logic [4:0] committed_source,
+  input logic [4:0] committed_destination,
+  output tiny5_pkg::phys_t committed_address, committed_write_address
 );
   import tiny5_pkg::*;
   phys_t speculative_map [32], committed_map [32], candidate_map [32];
@@ -21,6 +24,8 @@ module rename_control (
   logic blocked;
   issue_t mapped [2];
   logic [PHYS_REGS-1:0] restore_free;
+  assign committed_address = committed_map[committed_source];
+  assign committed_write_address = committed_map[committed_destination];
   always_comb begin
     restore_free = '1;
     restore_free[0] = 0;
@@ -52,7 +57,7 @@ module rename_control (
       if (decoded[p].immediate_b)
         mapped[p].b = '{ready:1'b1, tag:6'b0, value:32'b0};
       if (p < int'(offer_count) && !blocked) begin
-        if (decoded[p].terminal) begin
+        if (decoded[p].terminal || decoded[p].serial) begin
           allow_count = allow_count + 1'b1;
           blocked = 1;
         end else if (decoded[p].rd != 0 && used >= int'(free_available)) blocked = 1;
@@ -81,9 +86,10 @@ module rename_control (
     release_valid = 0;
     for (int p = 0; p < 2; p++) begin
       release_register[p] = retire_data[p].meta.old_pdst;
-      if (p < int'(dispatch_count) && !decoded[p].terminal && decoded[p].rd != 0)
+      if (p < int'(dispatch_count) && !decoded[p].terminal && !decoded[p].serial && decoded[p].rd != 0)
         allocate_count = allocate_count + 1'b1;
-      if (p < int'(retire_count) && retire_data[p].meta.rd != 0) release_valid[p] = 1;
+      if (p < int'(retire_count) && !retire_data[p].serial && retire_data[p].meta.rd != 0)
+        release_valid[p] = 1;
     end
   end
   always_ff @(posedge clk) begin
@@ -101,11 +107,11 @@ module rename_control (
       for (int p = 0; p < 2; p++) begin
         if (complete_valid[p] && complete_data[p].meta.rd != 0)
           ready_q[complete_data[p].meta.pdst] <= 1;
-        if (p < int'(dispatch_count) && !decoded[p].terminal && decoded[p].rd != 0) begin
+        if (p < int'(dispatch_count) && !decoded[p].terminal && !decoded[p].serial && decoded[p].rd != 0) begin
           speculative_map[decoded[p].rd] <= prepared[p].meta.pdst;
           ready_q[prepared[p].meta.pdst] <= 0;
         end
-        if (p < int'(retire_count) && retire_data[p].meta.rd != 0)
+        if (p < int'(retire_count) && !retire_data[p].serial && retire_data[p].meta.rd != 0)
           committed_map[retire_data[p].meta.rd] <= retire_data[p].meta.pdst;
       end
     end

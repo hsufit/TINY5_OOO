@@ -14,6 +14,7 @@ public:
 
     sc_core::sc_in<bool> clk{"clk"};
     sc_core::sc_in<bool> reset{"reset"};
+    sc_core::sc_in<bool> irq_external{"irq_external"};
 
     sc_core::sc_out<bool> imem_req_valid{"imem_req_valid"};
     sc_core::sc_in<bool> imem_req_ready{"imem_req_ready"};
@@ -39,7 +40,8 @@ public:
 
     SC_HAS_PROCESS(Rv32imCpu);
     explicit Rv32imCpu(sc_core::sc_module_name name, unsigned issue_width = 1,
-                       SchedulingMode mode = SchedulingMode::InOrder, bool branch_at_retire = false);
+                       SchedulingMode mode = SchedulingMode::InOrder, bool branch_at_retire = false,
+                       bool enable_traps = false);
     ~Rv32imCpu() override;
 
 private:
@@ -49,6 +51,7 @@ private:
     const unsigned issue_width_;
     const SchedulingMode mode_;
     const bool branch_at_retire_;
+    const bool enable_traps_;
     std::unique_ptr<Pipeline> pipeline_;
     sc_core::sc_event state_changed_;
 };

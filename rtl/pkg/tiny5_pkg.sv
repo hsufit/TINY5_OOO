@@ -14,17 +14,22 @@ package tiny5_pkg;
   localparam logic [1:0] IMEM_OK = 0, IMEM_END = 1, IMEM_FAULT = 2;
   localparam logic [1:0] FAULT_NONE = 0, FAULT_ILLEGAL = 1, FAULT_ACCESS = 2,
                          FAULT_MISALIGNED = 3;
+  localparam logic [31:0] CAUSE_INSTR_MISALIGNED = 0, CAUSE_INSTR_ACCESS = 1,
+                          CAUSE_ILLEGAL = 2, CAUSE_BREAKPOINT = 3,
+                          CAUSE_ECALL_M = 11, CAUSE_EXTERNAL = 32'h8000_000b;
   typedef struct packed {
     logic [31:0] pc, instruction;
     logic [1:0] status;
   } fetch_t;
   typedef struct packed {
-    logic [31:0] pc, immediate;
+    logic [31:0] pc, immediate, instruction;
     op_t op;
     logic [4:0] rs1, rs2, rd;
     logic immediate_b;
     logic terminal;
+    logic serial;
     logic [1:0] fault;
+    logic [31:0] trap_cause;
   } decode_t;
   typedef struct packed {
     logic [31:0] pc;
@@ -62,7 +67,9 @@ package tiny5_pkg;
   } result_t;
   typedef struct packed {
     logic valid, done, terminal;
+    logic serial;
     logic [1:0] fault;
+    logic [31:0] trap_cause, instruction;
     meta_t meta;
     logic [31:0] value;
     branch_result_t branch;

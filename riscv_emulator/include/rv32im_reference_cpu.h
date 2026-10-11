@@ -13,6 +13,7 @@ public:
 
     sc_core::sc_in<bool> clk{"clk"};
     sc_core::sc_in<bool> reset{"reset"};
+    sc_core::sc_in<bool> irq_external{"irq_external"};
 
     sc_core::sc_out<bool> imem_req_valid{"imem_req_valid"};
     sc_core::sc_in<bool> imem_req_ready{"imem_req_ready"};
@@ -33,7 +34,7 @@ public:
     sc_core::sc_out<sc_dt::sc_uint<2>> fault_code{"fault_code"};
 
     SC_HAS_PROCESS(Rv32imReferenceCpu);
-    explicit Rv32imReferenceCpu(sc_core::sc_module_name name);
+    explicit Rv32imReferenceCpu(sc_core::sc_module_name name, bool enable_traps = false);
 
 private:
     enum class State { IssueRequest, WaitForRequest, WaitForResponse, Stopped };
@@ -42,11 +43,16 @@ private:
     void reset_state();
     unsigned execute(std::uint32_t instruction, unsigned& rd, std::uint32_t& value,
                      std::uint32_t& next_pc);
-    void raise_fault(unsigned code);
+    void raise_fault(unsigned code, std::uint32_t tval = 0);
+    std::uint32_t read_csr(unsigned address) const;
+    void write_csr(unsigned address, std::uint32_t value);
 
     std::array<std::uint32_t, kRegisterCount> registers_{};
     std::uint32_t pc_{0};
     State state_{State::IssueRequest};
+    bool enable_traps_{false};
+    bool mie_{false}, mpie_{false}, meie_{false};
+    std::uint32_t mtvec_{0}, mscratch_{0}, mepc_{0}, mcause_{0}, mtval_{0};
 };
 
 #endif

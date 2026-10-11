@@ -1,5 +1,10 @@
-module retire_unit #(parameter int RETIRE_WIDTH = 2) (
+module retire_unit #(
+  parameter int RETIRE_WIDTH = 2,
+  parameter bit ENABLE_TRAPS = 0
+) (
   input logic clk, reset, fetch_idle,
+  input logic suppress_retire,
+  input logic [31:0] system_value,
   input tiny5_pkg::rob_entry_t head_data [2],
   input logic [1:0] retire_limit,
   output logic [1:0] retire_count,
@@ -13,12 +18,15 @@ module retire_unit #(parameter int RETIRE_WIDTH = 2) (
   always_comb begin
     retire_count = 0;
     finish = 0;
-    if (!halted && !fault && head_data[0].valid && head_data[0].done) begin
-      if (head_data[0].terminal) finish = fetch_idle;
+    if (!halted && !fault && head_data[0].valid && head_data[0].done && !suppress_retire) begin
+      if (head_data[0].terminal) begin
+        if (!ENABLE_TRAPS || head_data[0].fault == 0) finish = fetch_idle;
+      end
       else begin
         retire_count = 1;
-        if (RETIRE_WIDTH == 2 && retire_limit > 1 && head_data[1].valid && head_data[1].done &&
-            !head_data[1].terminal) retire_count = 2;
+        if (RETIRE_WIDTH == 2 && retire_limit > 1 && !head_data[0].serial &&
+            head_data[1].valid && head_data[1].done && !head_data[1].terminal &&
+            !head_data[1].serial) retire_count = 2;
       end
     end
   end
@@ -41,7 +49,8 @@ module retire_unit #(parameter int RETIRE_WIDTH = 2) (
       if (retire_count > 0) begin
         retire0_pc <= head_data[0].meta.pc;
         retire0_rd <= head_data[0].meta.rd;
-        retire0_value <= head_data[0].value;
+        retire0_value <= head_data[0].serial && head_data[0].meta.rd != 0 ?
+                         system_value : head_data[0].value;
       end
       if (retire_count > 1) begin
         retire1_pc <= head_data[1].meta.pc;

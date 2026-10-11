@@ -1,4 +1,4 @@
-module rv32_decode (
+module rv32_decode #(parameter bit ENABLE_TRAPS = 0) (
   input tiny5_pkg::fetch_t fetched,
   output tiny5_pkg::decode_t decoded
 );
@@ -6,18 +6,22 @@ module rv32_decode (
   logic legal;
   logic [6:0] opcode, funct7;
   logic [2:0] funct3;
+  logic csr_known, csr_write;
   always_comb begin
     opcode = fetched.instruction[6:0];
     funct3 = fetched.instruction[14:12];
     funct7 = fetched.instruction[31:25];
     decoded = '0;
     decoded.pc = fetched.pc;
+    decoded.instruction = fetched.instruction;
     decoded.op = OP_ADD;
     decoded.rd = fetched.instruction[11:7];
     decoded.rs1 = fetched.instruction[19:15];
     decoded.rs2 = fetched.instruction[24:20];
     decoded.immediate = {{20{fetched.instruction[31]}}, fetched.instruction[31:20]};
     legal = 1;
+    csr_known = 0;
+    csr_write = 0;
     case (opcode)
       7'h13: begin
         decoded.immediate_b = 1;
@@ -83,6 +87,38 @@ module rv32_decode (
           default: legal = 0;
         endcase
       end
+      7'h73: begin
+        legal = ENABLE_TRAPS;
+        decoded.rs2 = 0;
+        if (funct3 == 0) begin
+          decoded.rd = 0;
+          decoded.rs1 = 0;
+          case (fetched.instruction)
+            32'h0000_0073: begin
+              decoded.terminal = 1;
+              decoded.fault = FAULT_ILLEGAL;
+              decoded.trap_cause = CAUSE_ECALL_M;
+            end
+            32'h0010_0073: begin
+              decoded.terminal = 1;
+              decoded.fault = FAULT_ILLEGAL;
+              decoded.trap_cause = CAUSE_BREAKPOINT;
+            end
+            32'h3020_0073: decoded.serial = 1;
+            default: legal = 0;
+          endcase
+        end else begin
+          decoded.serial = 1;
+          csr_write = funct3 == 3'b001 || funct3 == 3'b101 || decoded.rs1 != 0;
+          case (fetched.instruction[31:20])
+            12'h300, 12'h301, 12'h304, 12'h305, 12'h340,
+            12'h341, 12'h342, 12'h343, 12'h344, 12'hf14: csr_known = 1;
+            default: csr_known = 0;
+          endcase
+          legal = ENABLE_TRAPS && csr_known && funct3 != 3'b100 &&
+                  !(fetched.instruction[31:20] == 12'hf14 && csr_write);
+        end
+      end
       default: legal = 0;
     endcase
     if (fetched.status != IMEM_OK || !legal) begin
@@ -91,9 +127,17 @@ module rv32_decode (
       decoded.rd = 0;
       decoded.rs1 = 0;
       decoded.rs2 = 0;
-      if (fetched.status == IMEM_END) decoded.fault = FAULT_NONE;
-      else if (fetched.status != IMEM_OK) decoded.fault = FAULT_ACCESS;
-      else decoded.fault = FAULT_ILLEGAL;
+      decoded.serial = 0;
+      if (fetched.status == IMEM_END) begin
+        decoded.fault = FAULT_NONE;
+        decoded.trap_cause = 0;
+      end else if (fetched.status != IMEM_OK) begin
+        decoded.fault = FAULT_ACCESS;
+        decoded.trap_cause = CAUSE_INSTR_ACCESS;
+      end else begin
+        decoded.fault = FAULT_ILLEGAL;
+        decoded.trap_cause = CAUSE_ILLEGAL;
+      end
     end
   end
 endmodule

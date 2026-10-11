@@ -11,6 +11,9 @@ always not taken. The existing cores block younger dispatch while continuing
 fetch (option 2). `tiny5_dual_ooo_retire` permits speculative execution and
 recovers at retirement (option 4). Both policies share the datapath; see
 [RTL architecture](docs/rtl_architecture.md).
+They also offer opt-in machine-mode exception and external interrupt handling
+with CSRs and `MRET`; the default configuration retains the original sticky
+fault interface.
 
 Run SystemC tests with `./riscv_emulator/run.sh` and RTL tests with `./rtl/run.sh`.
 To build and run every SystemC, RTL, protocol, and waveform suite:

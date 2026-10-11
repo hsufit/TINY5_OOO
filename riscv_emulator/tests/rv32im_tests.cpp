@@ -22,6 +22,7 @@ class Rv32imTestbench : public sc_core::sc_module {
 public:
     sc_core::sc_clock clock{"clock", 10, sc_core::SC_NS};
     sc_core::sc_signal<bool> reset{"reset"};
+    sc_core::sc_signal<bool> irq_external{"irq_external"};
     sc_core::sc_signal<bool> imem_req_valid{"imem_req_valid"};
     sc_core::sc_signal<bool> imem_req_ready{"imem_req_ready"};
     sc_core::sc_signal<sc_dt::sc_uint<32>> imem_req_addr{"imem_req_addr"};
@@ -51,6 +52,7 @@ public:
     explicit Rv32imTestbench(sc_core::sc_module_name name) : sc_core::sc_module(name) {
         cpu.clk(clock);
         cpu.reset(reset);
+        cpu.irq_external(irq_external);
         cpu.imem_req_valid(imem_req_valid);
         cpu.imem_req_ready(imem_req_ready);
         cpu.imem_req_addr(imem_req_addr);

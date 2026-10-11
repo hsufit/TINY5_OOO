@@ -4,7 +4,9 @@ This directory contains a cycle-accurate SystemC CPU for the arithmetic subset
 of RV32I and RV32M, matching the single and dual-issue in-order cores and the
 dual-issue out-of-order core.
 Conditional branches are supported with an always-not-taken assumption.
-There are no jumps, loads, stores, CSRs, traps, or system calls.
+Opt-in machine-mode traps support instruction exceptions, `ECALL`, `EBREAK`,
+`MRET`, CSR instructions, and one external interrupt. There are no jumps,
+loads, or stores.
 
 `Rv32imCpu` models the RTL frontend queues, operand dependencies, issue and
 completion queues, one or two registered ALUs, multiply/divide timing, two
@@ -38,12 +40,14 @@ termination ports:
 ```text
 imem_req_valid/ready, imem_req_addr
 imem_rsp_valid/ready, imem_rsp_data, imem_rsp_status
+irq_external (level-sensitive machine external interrupt)
 retire_valid, retire_pc, retire_rd, retire_value (lane 0)
 retire1_valid, retire1_pc, retire1_rd, retire1_value (lane 1)
 halted, fault, fault_code
 ```
 
-`Rv32imCpu(name, issue_width, scheduling_mode, branch_at_retire=false)` selects width 1 or 2 and
+`Rv32imCpu(name, issue_width, scheduling_mode, branch_at_retire=false,
+enable_traps=false)` selects width 1 or 2 and
 in-order or out-of-order scheduling. The defaults are width 1 and in-order;
 out-of-order mode requires width 2. Lane 1 remains invalid at width 1.
 The default branch policy blocks younger dispatch while fetch continues (option 2).
@@ -51,13 +55,26 @@ Set `branch_at_retire=true` in out-of-order mode for option 4: younger instructi
 execute speculatively; a taken branch retires alone, flushes younger work, and
 restores the committed register map. Both policies match their RTL every cycle.
 
+With `enable_traps=true` (RTL parameter `ENABLE_TRAPS=1`), exceptions redirect to
+the direct `mtvec` address instead of setting sticky `fault`. A trap saves the
+faulting PC or next unretired PC in `mepc`, records `mcause` and `mtval`, and
+clears `mstatus.MIE`; `MRET` restores interrupt enable and resumes at `mepc`.
+`irq_external` is reflected in `mip.MEIP` and requires both `mie.MEIE` and
+`mstatus.MIE`. A still-asserted input can cause another trap after `MRET`.
+Supported CSRs are `mstatus`, fixed RV32IM `misa`, `mie`, direct `mtvec`,
+`mscratch`, `mepc`, `mcause`, `mtval`, `mip`, and `mhartid=0`.
+CSR and system instructions serialize at retirement. Existing programs keep
+their prior fault behavior because traps are disabled by default.
+
 Instruction responses use `OK=0`, `END_OF_PROGRAM=1`, `ACCESS_FAULT=2`, and
 `RESERVED=3`. CPU faults use `NONE=0`, `ILLEGAL_INSTRUCTION=1`,
 `INSTRUCTION_ACCESS_FAULT=2`, and `INSTRUCTION_ADDRESS_MISALIGNED=3`.
 A successful branch retires with register zero and value zero. A taken branch
 to a target not aligned to four bytes faults without retiring.
 
-`halted`, `fault`, and `fault_code` remain stable until reset. Every successful
+When traps are disabled, `halted`, `fault`, and `fault_code` remain stable until
+reset. With traps enabled, `halted` still marks end-of-program, and handled
+exceptions leave `fault` low. Every successful
 instruction emits one retirement event; an instruction targeting `x0` emits
 register zero and value zero.
 
@@ -70,6 +87,10 @@ both retirement lanes, and termination every cycle. It also checks architectural
 traces against the independent interpreter. The dual-issue out-of-order RTL
 uses the same catalog and stress programs and is compared cycle by cycle with
 the out-of-order SystemC mode.
+The trap-enabled RTL suite also compares all four configurations with SystemC
+cycle by cycle, checks architectural traces against the independent interpreter,
+and writes `traps_single.fst`, `traps_dual.fst`, `traps_ooo.fst`, and
+`traps_ooo_retire.fst` in the build directory's `rtl/` subdirectory.
 
 ## ADD/MUL sequence and cycle counts
 

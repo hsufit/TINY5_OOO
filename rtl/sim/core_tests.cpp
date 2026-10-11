@@ -7,6 +7,12 @@
 #include "rv32im_reference_cpu.h"
 #include "test_catalog.h"
 #include <systemc>
+#ifndef RTL_TRAPS
+#define RTL_TRAPS 0
+#endif
+#if RTL_TRAPS
+#include <verilated_fst_sc.h>
+#endif
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -47,6 +53,11 @@ std::uint32_t branch(unsigned f3, unsigned a, unsigned b, int offset) {
     return ((value & 0x1000U) << 19U) | ((value & 0x7e0U) << 20U) | (b << 20U) |
            (a << 15U) | (f3 << 12U) | ((value & 0x1eU) << 7U) | ((value & 0x800U) >> 4U) | 0x63U;
 }
+#if RTL_TRAPS
+std::uint32_t csr(unsigned f3, unsigned rd, unsigned address, unsigned source) {
+    return (address << 20U) | (source << 15U) | (f3 << 12U) | (rd << 7U) | 0x73U;
+}
+#endif
 std::vector<std::uint8_t> bytes(const std::vector<std::uint32_t>& words) {
     std::vector<std::uint8_t> result;
     for (auto word : words)
@@ -83,13 +94,16 @@ class Testbench : public sc_core::sc_module {
 public:
     sc_core::sc_clock clock{"clock", 10, sc_core::SC_NS};
     sc_signal<bool> reset{"reset"}, reserved_status{"reserved_status"};
+    sc_signal<bool> irq_external{"irq_external"};
+    sc_signal<bool> reference_irq_external{"reference_irq_external"};
     FetchSignals rtl_fetch{"rtl_fetch"}, reference_fetch{"reference_fetch"}, systemc_fetch{"systemc_fetch"};
     RetireSignals rtl_retire{"rtl_retire"}, reference_retire{"reference_retire"}, systemc_retire{"systemc_retire"};
     RtlCpuAdapter<RTL_MODEL_CLASS> cpu{"cpu"};
     Rv32imCpu systemc_cpu{"systemc_cpu", RTL_MODE == 0 ? 1U : 2U,
                           RTL_MODE >= 2 ? Rv32imCpu::SchedulingMode::OutOfOrder :
-                                          Rv32imCpu::SchedulingMode::InOrder, RTL_MODE == 3};
-    Rv32imReferenceCpu reference{"reference"};
+                                          Rv32imCpu::SchedulingMode::InOrder, RTL_MODE == 3,
+                          RTL_TRAPS != 0};
+    Rv32imReferenceCpu reference{"reference", RTL_TRAPS != 0};
     InstructionMemory memory{"memory"}, reference_memory{"reference_memory"}, systemc_memory{"systemc_memory"};
     DualRetirementScoreboard scoreboard{"scoreboard"}, reference_scoreboard{"reference_scoreboard"},
         systemc_scoreboard{"systemc_scoreboard"};
@@ -114,7 +128,10 @@ public:
     SC_HAS_PROCESS(Testbench);
     explicit Testbench(sc_core::sc_module_name name) : sc_module(name) {
         bind_fetch(cpu, rtl_fetch);
+        cpu.irq_external(irq_external);
+        systemc_cpu.irq_external(irq_external);
         bind_fetch(reference, reference_fetch);
+        reference.irq_external(reference_irq_external);
         bind_fetch(systemc_cpu, systemc_fetch);
         bind_memory(memory, rtl_fetch);
         bind_memory(reference_memory, reference_fetch);
@@ -245,8 +262,12 @@ private:
         if (debug_redirect.read()) {
             ++run_redirects_;
             if (!divide_completed_) redirect_before_divide_ = true;
+#if RTL_TRAPS
+            if (debug_backend_flush.read()) branch_pending_ = false;
+#else
             if (RTL_MODE == 3 && !debug_backend_flush.read()) fail("retirement redirect without backend flush");
             if (RTL_MODE < 3 && debug_backend_flush.read()) fail("blocking branch flushed older backend work");
+#endif
         }
         if (issued == 3U) ++dual_issue_cycles_;
         if (rtl_retire.valid[1].read()) ++dual_retire_cycles_;
@@ -272,6 +293,8 @@ private:
         cycle_mismatch_ = false;
         paired_retire_12_16_seen_ = false;
         reset.write(true);
+        irq_external.write(false);
+        reference_irq_external.write(false);
         reserved_status.write(reserved);
         memory.set_timing(timing); reference_memory.set_timing(timing);
         systemc_memory.set_timing(timing);
@@ -413,7 +436,172 @@ private:
                   require_paired_retirement && mode == 0);
         }
     }
+#if RTL_TRAPS
+    void check_trap(const std::string& name, const std::vector<std::uint32_t>& words,
+                    const std::vector<RetirementEvent>& expected, bool interrupt_case = false,
+                    bool initially_masked_irq = false, unsigned handler_entries_before_clear = 1) {
+        for (unsigned timing = 0; timing < 2; ++timing) {
+            active_name_ = name + (timing == 0 ? " [normal]" : " [stalled]");
+            const unsigned failures_before = failures_;
+            start(bytes(words), timing == 0 ? InstructionMemory::normal_timing() :
+                                          InstructionMemory::stalled_timing());
+            if (initially_masked_irq) irq_external.write(true);
+            bool injected = false, cleared = false;
+            unsigned handler_entries = 0;
+            bool reference_injected = false, reference_cleared = false;
+            unsigned reference_handler_entries = 0;
+            const auto drive_reference_irq = [&] {
+                if (initially_masked_irq) reference_irq_external.write(true);
+                if (!interrupt_case || !reference_retire.valid[0].read()) return;
+                const unsigned pc = reference_retire.pc[0].read().to_uint();
+                if (!reference_injected && pc == 28U) {
+                    reference_irq_external.write(true);
+                    reference_injected = true;
+                }
+                if (reference_injected && !reference_cleared && pc == 96U &&
+                    ++reference_handler_entries == handler_entries_before_clear) {
+                    reference_irq_external.write(false);
+                    reference_cleared = true;
+                }
+            };
+            unsigned cycle = 0;
+            for (; cycle < 3000; ++cycle) {
+                wait(clock.negedge_event());
+                sample_cycle();
+                drive_reference_irq();
+                if (interrupt_case && !injected &&
+                    (((issue_valid.read().to_uint() & 1U) && issue_pc0.read().to_uint() == 32U) ||
+                     ((issue_valid.read().to_uint() & 2U) && issue_pc1.read().to_uint() == 32U))) {
+                    irq_external.write(true);
+                    injected = true;
+                }
+                if (interrupt_case && injected && !cleared && rtl_retire.valid[0].read() &&
+                    rtl_retire.pc[0].read().to_uint() == 96U) {
+                    ++handler_entries;
+                    if (handler_entries == handler_entries_before_clear) {
+                        irq_external.write(false);
+                        cleared = true;
+                    }
+                }
+                if (stopped(rtl_retire) && stopped(systemc_retire)) break;
+            }
+            if (cycle == 3000) fail("trap test timed out");
+            if (interrupt_case && (!injected || !cleared)) fail("interrupt was not injected and handled");
+            if (!rtl_retire.halted.read() || rtl_retire.fault.read()) fail("trap test did not halt normally");
+            if (scoreboard.state.protocol_error() ||
+                scoreboard.state.events() != expected) {
+                fail("unexpected RTL retirement trace");
+                const auto& actual = scoreboard.state.events();
+                for (std::size_t i = 0; i < std::min(actual.size(), expected.size()); ++i)
+                    if (!(actual[i] == expected[i])) {
+                        std::cerr << "  event " << i << ": actual pc=" << actual[i].pc
+                                  << " rd=" << actual[i].rd << " value=" << actual[i].value
+                                  << "; expected pc=" << expected[i].pc << " rd=" << expected[i].rd
+                                  << " value=" << expected[i].value << '\n';
+                        break;
+                    }
+            }
+            if (systemc_scoreboard.state.events() != expected)
+                fail("unexpected SystemC retirement trace");
+            unsigned reference_wait = 0;
+            while (!stopped(reference_retire) && reference_wait++ < 3000) {
+                wait(clock.negedge_event());
+                drive_reference_irq();
+            }
+            if (interrupt_case && (!reference_injected || !reference_cleared))
+                fail("reference interrupt was not injected and handled");
+            if (!stopped(reference_retire) || !reference_retire.halted.read() ||
+                reference_scoreboard.state.events() != expected)
+                fail("independent reference trap trace differs");
+            if (rtl_cycles_.cycles() != systemc_cycles_.cycles()) fail("trap cycle counts differ");
+            if (failures_ == failures_before && !cycle_mismatch_) std::cout << "[PASS] " << active_name_
+                << " cycles=" << rtl_cycles_.cycles() << " retired=" << expected.size() << '\n';
+        }
+    }
+    void run_trap_cases() {
+        const auto exception_program = [](std::uint32_t fault_word, bool fixed_resume = false) {
+            std::vector<std::uint32_t> words{
+                imm(0, 1, 0, 64), csr(1, 0, 0x305, 1), fault_word,
+                imm(0, 4, 0, 7), branch(0, 0, 0, 72)};
+            words.resize(16, 0xffffffffU);
+            words.insert(words.end(), {
+                csr(2, 2, 0x342, 0), csr(2, 3, 0x341, 0), csr(2, 5, 0x343, 0),
+                fixed_resume ? imm(0, 3, 0, 12) : imm(0, 3, 3, 4),
+                csr(1, 0, 0x341, 3), 0x30200073U});
+            return words;
+        };
+        const auto expected_exception = [](std::uint32_t cause, std::uint32_t tval,
+                                           std::uint32_t epc, bool branch_retires) {
+            std::vector<RetirementEvent> expected{{0, 1, 64}, {4, 0, 0}};
+            if (branch_retires) expected.push_back({8, 0, 0});
+            expected.insert(expected.end(), {{64, 2, cause}, {68, 3, epc}, {72, 5, tval},
+                {76, 3, 12}, {80, 0, 0}, {84, 0, 0}, {12, 4, 7}, {16, 0, 0}});
+            return expected;
+        };
+        check_trap("ecall", exception_program(0x00000073U),
+                   expected_exception(11, 0, 8, false));
+        check_trap("ebreak", exception_program(0x00100073U),
+                   expected_exception(3, 0, 8, false));
+        check_trap("illegal instruction", exception_program(0xffffffffU),
+                   expected_exception(2, 0xffffffffU, 8, false));
+        check_trap("misaligned branch", exception_program(branch(0, 0, 0, 2)),
+                   expected_exception(0, 10, 8, false));
+        check_trap("instruction access fault", exception_program(branch(0, 0, 0, 4088), true),
+                   expected_exception(1, 4096, 4096, true));
+        const auto unknown_csr = csr(1, 2, 0x999, 1);
+        check_trap("unknown CSR", exception_program(unknown_csr),
+                   expected_exception(2, unknown_csr, 8, false));
+
+        check_trap("CSR operations", {
+            imm(0, 1, 0, 10), csr(1, 2, 0x340, 1), csr(2, 3, 0x340, 0),
+            csr(7, 4, 0x340, 2), csr(6, 5, 0x340, 1), csr(5, 6, 0x340, 5),
+            imm(0, 1, 0, 1), csr(3, 7, 0x340, 1), csr(1, 8, 0x340, 0),
+            csr(2, 9, 0x340, 0), csr(2, 10, 0xf14, 0), csr(2, 11, 0x301, 0)},
+            {{0, 1, 10}, {4, 2, 0}, {8, 3, 10}, {12, 4, 10}, {16, 5, 8},
+             {20, 6, 9}, {24, 1, 1}, {28, 7, 5}, {32, 8, 4}, {36, 9, 0},
+             {40, 10, 0}, {44, 11, 0x40001100U}});
+        check_trap("CSR waits for older divide", {
+            imm(0, 10, 0, 120), imm(0, 11, 0, 3), reg(1, 4, 1, 10, 11),
+            csr(1, 2, 0x340, 1), csr(2, 3, 0x340, 0)},
+            {{0, 10, 120}, {4, 11, 3}, {8, 1, 40}, {12, 2, 0}, {16, 3, 40}});
+        check_trap("taken branch discards wrong-path exception", {
+            imm(0, 1, 0, 64), csr(1, 0, 0x305, 1), reg(1, 4, 2, 0, 0),
+            branch(0, 0, 0, 12), 0xffffffffU, imm(0, 3, 0, 99), imm(0, 4, 0, 7)},
+            {{0, 1, 64}, {4, 0, 0}, {8, 2, 0xffffffffU}, {12, 0, 0}, {24, 4, 7}});
+
+        std::vector<std::uint32_t> interrupt_program{
+            imm(0, 1, 0, 96), csr(1, 0, 0x305, 1), imm(0, 2, 0, 0x800),
+            csr(2, 0, 0x304, 2), imm(0, 3, 0, 8), csr(2, 0, 0x300, 3),
+            imm(0, 10, 0, 120), imm(0, 11, 0, 3), reg(1, 4, 4, 10, 11),
+            imm(0, 5, 0, 7), imm(0, 6, 0, 9), reg(0, 0, 7, 4, 5),
+            csr(2, 8, 0x300, 0), branch(0, 0, 0, 56)};
+        interrupt_program.resize(24, 0xffffffffU);
+        interrupt_program.insert(interrupt_program.end(), {
+            csr(2, 20, 0x342, 0), csr(2, 21, 0x341, 0), 0x30200073U});
+        check_trap("external interrupt during divide", interrupt_program,
+            {{0, 1, 96}, {4, 0, 0}, {8, 2, 0xfffff800U}, {12, 0, 0},
+             {16, 3, 8}, {20, 0, 0}, {24, 10, 120}, {28, 11, 3},
+             {96, 20, 0x8000000bU}, {100, 21, 32}, {104, 0, 0},
+             {32, 4, 40}, {36, 5, 7}, {40, 6, 9}, {44, 7, 47},
+             {48, 8, 0x1888}, {52, 0, 0}}, true);
+        check_trap("external interrupt level retriggers after mret", interrupt_program,
+            {{0, 1, 96}, {4, 0, 0}, {8, 2, 0xfffff800U}, {12, 0, 0},
+             {16, 3, 8}, {20, 0, 0}, {24, 10, 120}, {28, 11, 3},
+             {96, 20, 0x8000000bU}, {100, 21, 32}, {104, 0, 0},
+             {96, 20, 0x8000000bU}, {100, 21, 32}, {104, 0, 0},
+             {32, 4, 40}, {36, 5, 7}, {40, 6, 9}, {44, 7, 47},
+             {48, 8, 0x1888}, {52, 0, 0}}, true, false, 2);
+        check_trap("masked external interrupt", {imm(0, 1, 0, 7), imm(0, 2, 1, 1)},
+                   {{0, 1, 7}, {4, 2, 8}}, false, true);
+        if (failures_ == 0) std::cout << "All trap differential tests passed\n";
+    }
+#endif
     void run() {
+#if RTL_TRAPS
+        run_trap_cases();
+        sc_core::sc_stop();
+        return;
+#endif
         for (const auto& test : rv32im_test_catalog()) {
             for (unsigned mode = 0; mode < 2; ++mode) {
                 active_name_ = test.name + (mode == 0 ? " [normal]" : " [stalled]");
@@ -611,7 +799,19 @@ private:
 
 int sc_main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
+#if RTL_TRAPS
+    Verilated::traceEverOn(true);
+#endif
     Testbench testbench{"testbench"};
+#if RTL_TRAPS
+    sc_core::sc_start(sc_core::SC_ZERO_TIME);
+    VerilatedFstSc trace;
+    testbench.cpu.model.trace(&trace, 99);
+    trace.open(argc > 1 ? argv[1] : "trap_tests.fst");
+#endif
     sc_core::sc_start();
+#if RTL_TRAPS
+    trace.close();
+#endif
     return testbench.failures() == 0 ? 0 : 1;
 }

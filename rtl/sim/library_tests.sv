@@ -78,7 +78,9 @@ module library_tests;
   logic [31:0] t_pc0, t_pc1, t_value0, t_value1;
   logic [4:0] t_rd0, t_rd1;
   retire_unit retire_under_test (
-    .clk, .reset, .retire_limit(2'd2), .fetch_idle(t_idle), .head_data(t_head), .retire_count(t_count), .finish(t_finish),
+    .clk, .reset, .retire_limit(2'd2), .fetch_idle(t_idle),
+    .suppress_retire(1'b0), .system_value(32'b0),
+    .head_data(t_head), .retire_count(t_count), .finish(t_finish),
     .retire0_valid(t_v0), .retire1_valid(t_v1), .retire0_pc(t_pc0), .retire1_pc(t_pc1),
     .retire0_value(t_value0), .retire1_value(t_value1), .retire0_rd(t_rd0), .retire1_rd(t_rd1),
     .halted(t_halt), .fault(t_fault), .fault_code(t_code)
@@ -88,6 +90,7 @@ module library_tests;
   rob_tag_t r_tags [2];
   issue_t r_prepared [2];
   phys_t r_address [4];
+  phys_t r_committed_address, r_committed_write_address;
   logic [31:0] r_value [4];
   result_t r_results [2];
   rob_entry_t r_retired [2];
@@ -96,7 +99,9 @@ module library_tests;
     .clk, .reset, .restore(1'b0), .offer_count(r_offer), .dispatch_count(r_dispatch), .decoded(r_decode),
     .allocate_tag(r_tags), .allow_count(r_allow), .prepared(r_prepared),
     .read_address(r_address), .read_value(r_value), .complete_valid(r_complete),
-    .complete_data(r_results), .retire_count(r_retire), .retire_data(r_retired)
+    .complete_data(r_results), .retire_count(r_retire), .retire_data(r_retired),
+    .committed_source(5'd0), .committed_destination(5'd0),
+    .committed_address(r_committed_address), .committed_write_address(r_committed_write_address)
   );
 
   function automatic logic [31:0] expected_m(input op_t op, input logic [31:0] a, b);

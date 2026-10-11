@@ -33,7 +33,8 @@ std::uint32_t arithmetic_shift_right(std::uint32_t value, unsigned amount) {
 
 }  // namespace
 
-Rv32imReferenceCpu::Rv32imReferenceCpu(sc_core::sc_module_name name) : sc_core::sc_module(name) {
+Rv32imReferenceCpu::Rv32imReferenceCpu(sc_core::sc_module_name name, bool enable_traps)
+    : sc_core::sc_module(name), enable_traps_(enable_traps) {
     SC_METHOD(tick);
     sensitive << clk.pos();
     dont_initialize();
@@ -42,6 +43,8 @@ Rv32imReferenceCpu::Rv32imReferenceCpu(sc_core::sc_module_name name) : sc_core::
 void Rv32imReferenceCpu::reset_state() {
     registers_.fill(0);
     pc_ = 0;
+    mie_ = mpie_ = meie_ = false;
+    mtvec_ = mscratch_ = mepc_ = mcause_ = mtval_ = 0;
     state_ = State::IssueRequest;
     imem_req_valid.write(false);
     imem_req_addr.write(0U);
@@ -55,12 +58,53 @@ void Rv32imReferenceCpu::reset_state() {
     fault_code.write(static_cast<unsigned>(CpuFaultCode::NONE));
 }
 
-void Rv32imReferenceCpu::raise_fault(unsigned code) {
+void Rv32imReferenceCpu::raise_fault(unsigned code, std::uint32_t tval) {
+    if (enable_traps_) {
+        mpie_ = mie_;
+        mie_ = false;
+        mepc_ = pc_;
+        mcause_ = code == 1U ? 2U : code == 2U ? 1U :
+                  code == 3U ? 0U : code == 4U ? 11U : 3U;
+        mtval_ = tval;
+        pc_ = mtvec_;
+        imem_req_valid.write(false);
+        imem_rsp_ready.write(false);
+        state_ = State::IssueRequest;
+        return;
+    }
     fault.write(true);
     fault_code.write(code);
     imem_req_valid.write(false);
     imem_rsp_ready.write(false);
     state_ = State::Stopped;
+}
+
+std::uint32_t Rv32imReferenceCpu::read_csr(unsigned address) const {
+    switch (address) {
+    case 0x300: return 0x1800U | (mpie_ ? 0x80U : 0U) | (mie_ ? 8U : 0U);
+    case 0x301: return 0x40001100U;
+    case 0x304: return meie_ ? 0x800U : 0U;
+    case 0x305: return mtvec_;
+    case 0x340: return mscratch_;
+    case 0x341: return mepc_;
+    case 0x342: return mcause_;
+    case 0x343: return mtval_;
+    case 0x344: return irq_external.read() ? 0x800U : 0U;
+    default: return 0;
+    }
+}
+
+void Rv32imReferenceCpu::write_csr(unsigned address, std::uint32_t value) {
+    switch (address) {
+    case 0x300: mie_ = (value & 8U) != 0U; mpie_ = (value & 0x80U) != 0U; break;
+    case 0x304: meie_ = (value & 0x800U) != 0U; break;
+    case 0x305: mtvec_ = value & ~3U; break;
+    case 0x340: mscratch_ = value; break;
+    case 0x341: mepc_ = value & ~3U; break;
+    case 0x342: mcause_ = value; break;
+    case 0x343: mtval_ = value; break;
+    default: break;
+    }
 }
 
 void Rv32imReferenceCpu::tick() {
@@ -69,6 +113,16 @@ void Rv32imReferenceCpu::tick() {
         return;
     }
     retire_valid.write(false);
+
+    if (enable_traps_ && state_ == State::IssueRequest && mie_ && meie_ &&
+        irq_external.read()) {
+        mpie_ = mie_;
+        mie_ = false;
+        mepc_ = pc_;
+        mcause_ = 0x8000000bU;
+        mtval_ = 0;
+        pc_ = mtvec_;
+    }
 
     switch (state_) {
     case State::IssueRequest:
@@ -94,14 +148,15 @@ void Rv32imReferenceCpu::tick() {
                 halted.write(true);
                 state_ = State::Stopped;
             } else if (status != InstructionResponseStatus::OK) {
-                raise_fault(static_cast<unsigned>(CpuFaultCode::INSTRUCTION_ACCESS_FAULT));
+                raise_fault(static_cast<unsigned>(CpuFaultCode::INSTRUCTION_ACCESS_FAULT), pc_);
             } else {
                 unsigned rd = 0U;
                 std::uint32_t value = 0U;
                 std::uint32_t next_pc = pc_ + 4U;
                 const unsigned error = execute(imem_rsp_data.read().to_uint(), rd, value, next_pc);
                 if (error != 0U) {
-                    raise_fault(error);
+                    raise_fault(error, error == 3U ? next_pc :
+                                error == 1U ? imem_rsp_data.read().to_uint() : 0U);
                 } else {
                     retire_pc.write(pc_);
                     retire_rd.write(rd);
@@ -202,6 +257,38 @@ unsigned Rv32imReferenceCpu::execute(std::uint32_t instruction, unsigned& retire
 
         registers_[rd] = result;
         registers_[0] = 0U;
+        retired_rd = rd;
+        retired_value = registers_[rd];
+        return 0;
+    }
+
+    if (opcode == 0x73U && enable_traps_) {
+        if (funct3 == 0U) {
+            if (instruction == 0x00000073U) return 4U; // ECALL from M-mode
+            if (instruction == 0x00100073U) return 5U; // EBREAK
+            if (instruction != 0x30200073U) return 1U;
+            mie_ = mpie_;
+            mpie_ = true;
+            next_pc = mepc_;
+            retired_rd = 0;
+            retired_value = 0;
+            return 0;
+        }
+        const unsigned address = instruction >> 20U;
+        const bool known = address == 0x300U || address == 0x301U ||
+            address == 0x304U || address == 0x305U || address == 0x340U ||
+            address == 0x341U || address == 0x342U || address == 0x343U ||
+            address == 0x344U || address == 0xf14U;
+        const bool writes = funct3 == 1U || funct3 == 5U || rs1 != 0U;
+        if (!known || funct3 == 4U || (address == 0xf14U && writes)) return 1U;
+        const std::uint32_t old = read_csr(address);
+        const std::uint32_t source = (funct3 & 4U) != 0U ? rs1 : registers_[rs1];
+        if (writes) {
+            const std::uint32_t value = funct3 == 1U || funct3 == 5U ? source :
+                funct3 == 2U || funct3 == 6U ? old | source : old & ~source;
+            write_csr(address, value);
+        }
+        registers_[rd] = rd == 0U ? 0U : old;
         retired_rd = rd;
         retired_value = registers_[rd];
         return 0;

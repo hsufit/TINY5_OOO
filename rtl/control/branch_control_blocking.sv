@@ -1,6 +1,6 @@
 // Option 2: sequential prefetch, with no younger instruction past dispatch.
 module branch_control_blocking (
-  input logic clk, reset, finish,
+  input logic clk, reset, finish, recovery,
   input tiny5_pkg::decode_t decoded [2],
   input logic [1:0] dispatch_count,
   input tiny5_pkg::rob_tag_t allocate_tag [2],
@@ -34,7 +34,7 @@ module branch_control_blocking (
     end
   end
   always_ff @(posedge clk) begin
-    if (reset || finish) begin
+    if (reset || finish || recovery) begin
       pending <= 0;
       pending_tag <= 0;
     end else begin

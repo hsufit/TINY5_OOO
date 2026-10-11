@@ -43,6 +43,7 @@ module branch_protocol_tests;
   rob_tag_t tags [2];
   issue_t prepared [2];
   phys_t read_address [4];
+  phys_t committed_address, committed_write_address;
   logic [31:0] read_value [4];
   result_t complete_data [2];
   rob_entry_t retired [2];
@@ -50,7 +51,9 @@ module branch_protocol_tests;
   rename_control rename (
     .clk, .reset, .restore, .offer_count(offer), .dispatch_count(dispatch), .decoded,
     .allocate_tag(tags), .allow_count, .prepared, .read_address, .read_value,
-    .complete_valid, .complete_data, .retire_count, .retire_data(retired)
+    .complete_valid, .complete_data, .retire_count, .retire_data(retired),
+    .committed_source(5'd0), .committed_destination(5'd0),
+    .committed_address, .committed_write_address
   );
 
   rob_entry_t heads [2];
@@ -67,6 +70,7 @@ module branch_protocol_tests;
   );
   retire_unit retirement (
     .clk, .reset, .fetch_idle(1'b1), .head_data(heads), .retire_limit(limit),
+    .suppress_retire(1'b0), .system_value(32'b0),
     .retire_count(count), .finish, .retire0_valid(valid0), .retire1_valid(valid1),
     .retire0_pc(pc0), .retire1_pc(pc1), .retire0_value(value0), .retire1_value(value1),
     .retire0_rd(rd0), .retire1_rd(rd1), .halted, .fault, .fault_code(code)

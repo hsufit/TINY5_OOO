@@ -10,6 +10,7 @@ class RtlCpuAdapter : public sc_core::sc_module {
 public:
     sc_core::sc_in<bool> clk{"clk"};
     sc_core::sc_in<bool> reset{"reset"};
+    sc_core::sc_in<bool> irq_external{"irq_external"};
     sc_core::sc_in<bool> imem_req_ready{"imem_req_ready"};
     sc_core::sc_in<bool> imem_rsp_valid{"imem_rsp_valid"};
     sc_core::sc_out<bool> imem_req_valid{"imem_req_valid"};
@@ -53,6 +54,7 @@ public:
     explicit RtlCpuAdapter(sc_core::sc_module_name name) : sc_module(name) {
         model.clk(clk);
         model.reset(reset);
+        model.irq_external(irq_external);
         model.imem_req_ready(imem_req_ready);
         model.imem_rsp_valid(imem_rsp_valid);
         model.imem_req_valid(imem_req_valid);
